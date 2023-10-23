@@ -250,7 +250,9 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			}
 			__app_dbg_prev_print = now;
 		}
-	}
+		*next_us = (__app_dbg_prev_print + 1000000000U - now) / 1000U;
+	} else
+		*next_us = 1000000U;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		if (__app_close_posted) {
@@ -274,7 +276,6 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			}
 		}
 	}
-	*next_us = 0;
 }
 
 static void *__app_thread_init(void *workspace, void *opaque)
