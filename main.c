@@ -106,7 +106,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						uint16_t i;
 						for (i = 0; i < MAX_PORT_CNT; i++) {
 							uint16_t port = helper_ip4_get_connection_affinity(6 /* tcp */,
-											ip4_be, i,
+											ip4_be, htons(i),
 											__app_remote_ip4_addr_be, __app_l4_port_be,
 											opaque);
 							if (port != UINT16_MAX)
