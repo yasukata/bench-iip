@@ -31,7 +31,7 @@ git clone https://github.com/yasukata/iip-dpdk.git
 Please type the following command to build the application.
 
 ```
-IOSUB_MK=./iip-dpdk/build.mk make
+IOSUB_DIR=./iip-dpdk make
 ```
 
 The command above will download the source code of DPDK and compile it with the files in this repository, ```./iip``` and ```./iip-dpdk```.
