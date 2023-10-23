@@ -399,7 +399,7 @@ Two machines having the same configuration.
 
 We compile the program above with:
 ```
-gcc -O3 program_above.c -o app
+gcc -O3 program_above.c -lpthread -o app
 ```
 
 The server program (above) with the Linux TCP/IP stack
