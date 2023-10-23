@@ -514,7 +514,11 @@ static void __app_init(int argc, char *const *argv)
 	signal(SIGINT, sig_h);
 }
 
-#include "iip-dpdk/main.c"
+#define M2S(s) _M2S(s)
+#define _M2S(s) #s
+#include M2S(IOSUB_MAIN_C)
+#undef _M2S
+#undef M2S
 
 int main(int argc, char *const *argv)
 {
