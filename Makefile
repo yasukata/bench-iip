@@ -2,6 +2,7 @@ PROGS = a.out
 
 CFLAGS += -O3 -pipe -g -rdynamic
 CFLAGS += -Werror -Wextra -Wall
+CFLAGS += -DIOSUB_MAIN_C=$(IOSUB_DIR)/main.c
 
 LDFLAGS +=
 
@@ -14,7 +15,7 @@ CLEANFILES = $(PROGS) $(OBJS)
 .PHONY: all
 all: $(PROGS)
 
-include $(IOSUB_MK)
+include $(IOSUB_DIR)/build.mk
 
 $(OBJS): $(IOSUB_DEP)
 
