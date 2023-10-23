@@ -428,7 +428,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 	}
 }
 
-static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque __attribute__((unused)))
+static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
 {
 	void **opaque_array = (void *) opaque;
 	{
