@@ -28,6 +28,12 @@
 
 #include <arpa/inet.h>
 
+#define __iip_memcpy	memcpy
+#define __iip_memset	memset
+#define __iip_memcmp	memcmp
+#define __iip_memmove	memmove
+#define __iip_assert	assert
+
 #include "iip/main.c"
 
 static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t, uint32_t, uint16_t, void *);
