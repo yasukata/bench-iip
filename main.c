@@ -188,7 +188,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				else if (!iip_ops_util_core()) {
 					uint64_t now = NOW();
 					if (1000000000UL < (now - td->prev_arp)) {
-						printf("sending arp request ...\n");
+						D("sending arp request ...");
 						iip_arp_request(td->workspace, mac, ip4_be, __app_remote_ip4_addr_be, opaque);
 						td->prev_arp = now;
 					}
@@ -207,7 +207,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								switch (__app_proto_id) {
 								case 6:
 									{
-										printf("%u: try connect to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
+										D("%u: try connect to %hhu.%hhu.%hhu.%hhu:%u (local %u)",
 												iip_ops_util_core(),
 												(uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff),
 												(uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff),
@@ -225,7 +225,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 										void *m;
 										assert(td->pkt_payload);
 										assert((m = iip_ops_pkt_clone(td->pkt_payload, opaque)) != NULL);;
-										printf("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
+										D("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)",
 												iip_ops_util_core(),
 												(uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff),
 												(uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff),
@@ -344,7 +344,8 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		if (__app_close_posted) {
 			switch (td->close_state) {
 				case 0:
-					printf("close requested\n");
+					if (!iip_ops_util_core())
+						printf("close requested\n");
 					if (__app_remote_ip4_addr_be && !iip_ops_util_core()) {
 						assert((__app_latency_val = numa_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
 						{
@@ -405,7 +406,7 @@ static void *__app_thread_init(void *workspace, void *opaque)
 static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
 {
 	struct iip_arp_hdr *arph = (struct iip_arp_hdr *)((uintptr_t) iip_ops_pkt_get_data(m, opaque) + 14);
-	printf("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
+	D("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
 			arph->ip_sender[0],
 			arph->ip_sender[1],
 			arph->ip_sender[2],
@@ -426,7 +427,7 @@ static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void 
 
 static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __attribute__((unused)), void *opaque __attribute__((unused)))
 {
-	printf("received icmp reply\n");
+	D("received icmp reply");
 }
 
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
@@ -443,7 +444,7 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
 	to->handle = handle;
-	printf("[%u] accept new connection (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
+	D("[%u] accept new connection (%lu)", iip_ops_util_core(), ++__app_active_conn);
 	{
 		void **opaque_array = (void *) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
@@ -457,7 +458,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 	void **opaque_array = (void *) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
-		printf("[%u] connected (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
+		D("[%u] connected (%lu)", iip_ops_util_core(), ++__app_active_conn);
 		{
 			struct tcp_opaque *to = numa_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
@@ -562,7 +563,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 	}
 	{
 		uint64_t conn_cnt = --__app_active_conn;
-		printf("tcp connection closed (%lu)\n", conn_cnt);
+		D("tcp connection closed (%lu)", conn_cnt);
 	}
 }
 
