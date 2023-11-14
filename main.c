@@ -80,6 +80,8 @@ struct thread_data {
 
 struct tcp_opaque {
 	void *handle;
+	uint8_t sent;
+	uint64_t prev_sent; /* for pacing */
 	struct {
 		uint64_t ts;
 	} monitor;
@@ -101,6 +103,7 @@ static uint32_t __app_concurrency = 1;
 static uint8_t __app_proto_id = 6; /* tcp */
 static uint8_t __app_mode = 1;
 static uint8_t __app_io_depth = 1;
+static uint64_t __app_pacing_pps = 0;
 
 static uint64_t __app_latency_cnt = 0;
 static uint64_t *__app_latency_val = NULL;
@@ -110,6 +113,28 @@ static uint8_t __app_should_stop(void *opaque)
 	void **opaque_array = (void *) opaque;
 	struct thread_data *td = (struct thread_data *) opaque_array[1];
 	return td->should_stop;
+}
+
+static void __tcp_send_content(void *handle, struct tcp_opaque *to, void *opaque)
+{
+	void **opaque_array = (void *) opaque;
+	{
+		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		{
+			void *m;
+			assert(td->pkt_payload);
+			assert((m = iip_ops_pkt_clone(td->pkt_payload, opaque)) != NULL);
+			if (__app_pacing_pps) {
+				to->prev_sent = NOW();
+				to->sent = 1;
+			}
+			if (__app_mode == 1 /* ping-pong */)
+				to->monitor.ts = NOW();
+			assert(!iip_tcp_send(td->workspace, handle, m, opaque));
+			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_bytes += __app_payload_len;
+			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_pkt++;
+		}
+	}
 }
 
 #define MAX_PORT_CNT (1024)
@@ -227,6 +252,18 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				td->app_state = 3;
 			}
 			break;
+		case 3:
+			if (__app_pacing_pps) {
+				if (td->tcp.conn_list_cnt) {
+					uint16_t i;
+					for (i = 0; i < td->tcp.conn_list_cnt; i++) {
+						if (!td->tcp.conn_list[i]->sent) {
+							if ((1000000000UL / __app_pacing_pps) < NOW() - td->tcp.conn_list[i]->prev_sent)
+								__tcp_send_content(td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], opaque);
+						}
+					}
+				}
+			}
 		default:
 			break;
 		}
@@ -371,24 +408,6 @@ static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __att
 	printf("received icmp reply\n");
 }
 
-static void __tcp_send_content(void *handle, struct tcp_opaque *to, void *opaque)
-{
-	void **opaque_array = (void *) opaque;
-	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
-		{
-			void *m;
-			assert(td->pkt_payload);
-			assert((m = iip_ops_pkt_clone(td->pkt_payload, opaque)) != NULL);
-			if (__app_mode == 1 /* ping-pong */)
-				to->monitor.ts = NOW();
-			assert(!iip_tcp_send(td->workspace, handle, m, opaque));
-			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_bytes += __app_payload_len;
-			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_pkt++;
-		}
-	}
-}
-
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
 {
 	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == __app_l4_port_be)
@@ -466,7 +485,10 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 				}
 			}
 		}
-		__tcp_send_content(handle, tcp_opaque, opaque);
+		if (__app_pacing_pps)
+			((struct tcp_opaque *) tcp_opaque)->sent = 0;
+		else
+			__tcp_send_content(handle, tcp_opaque, opaque);
 		break;
 	case 2: /* burst */
 		break;
@@ -487,7 +509,10 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 		case 1: /* ping-pong */
 			break;
 		case 2: /* burst */
-			__tcp_send_content(handle, tcp_opaque, opaque);
+			if (__app_pacing_pps)
+				((struct tcp_opaque *) tcp_opaque)->sent = 0;
+			else
+				__tcp_send_content(handle, tcp_opaque, opaque);
 			break;
 		default:
 			assert(0);
@@ -555,7 +580,7 @@ static void __app_init(int argc, char *const *argv)
 {
 	{ /* parse arguments */
 		int ch, cnt = 0;
-		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:s:")) != -1) {
+		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:r:s:")) != -1) {
 			cnt += 2;
 			switch (ch) {
 			case 'c':
@@ -591,6 +616,9 @@ static void __app_init(int argc, char *const *argv)
 			case 'p':
 				__app_l4_port_be = htons(atoi(optarg));
 				break;
+			case 'r':
+				__app_pacing_pps = strtol(optarg, NULL, 10);
+				break;
 			case 's':
 				assert(inet_pton(AF_INET, optarg, &__app_remote_ip4_addr_be) == 1);
 				break;
@@ -619,15 +647,19 @@ static void __app_init(int argc, char *const *argv)
 		}
 		assert(__app_payload_len);
 		assert(__app_concurrency);
-		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u io-depth %u\n",
+		if (__app_pacing_pps)
+			assert(__app_io_depth == 1);
+		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u io-depth %u pacing %lu\n",
 				(__app_remote_ip4_addr_be >>  0) & 0x0ff,
 				(__app_remote_ip4_addr_be >>  8) & 0x0ff,
 				(__app_remote_ip4_addr_be >> 16) & 0x0ff,
 				(__app_remote_ip4_addr_be >> 24) & 0x0ff,
 				ntohs(__app_l4_port_be),
 				__app_concurrency,
-				__app_io_depth);
+				__app_io_depth,
+				__app_pacing_pps);
 	} else {
+		assert(!__app_pacing_pps);
 		switch (__app_mode) {
 		case 1: /* ping-pong */
 			printf("server: ping-pong mode\n");
