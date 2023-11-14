@@ -646,6 +646,9 @@ static void __app_init(int argc, char *const *argv)
 			case 't':
 				__app_duration = strtol(optarg, NULL, 10);
 				break;
+			case 'v':
+				iip_verbose_level = 1;
+				break;
 			default:
 				assert(0);
 				break;
