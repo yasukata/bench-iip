@@ -104,6 +104,9 @@ static uint8_t __app_proto_id = 6; /* tcp */
 static uint8_t __app_mode = 1;
 static uint8_t __app_io_depth = 1;
 static uint64_t __app_pacing_pps = 0;
+static uint64_t __app_duration = 0;
+static uint64_t __app_start_time = 0;
+static uint64_t __rx_pps_prev[2] = { 0 }, __rx_bytes_prev[2] = { 0 }, __tx_pps_prev[2] = { 0 }, __tx_bytes_prev[2] = { 0 };
 
 static uint64_t __app_latency_cnt = 0;
 static uint64_t *__app_latency_val = NULL;
@@ -250,6 +253,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					}
 				}
 				td->app_state = 3;
+				__app_start_time = NOW();
 			}
 			break;
 		case 3:
@@ -306,6 +310,14 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						}
 					}
 				}
+				__rx_pps_prev[0] = __rx_pps_prev[1];
+				__rx_pps_prev[1] = rx_pkt;
+				__rx_bytes_prev[0] = __rx_bytes_prev[1];
+				__rx_bytes_prev[1] = rx_bytes;
+				__tx_pps_prev[0] = __tx_pps_prev[1];
+				__tx_pps_prev[1] = tx_pkt;
+				__tx_bytes_prev[0] = __tx_bytes_prev[1];
+				__tx_bytes_prev[1] = tx_bytes;
 				printf("paylaod total: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
 						rx_bytes / 125000UL,
 						rx_pkt,
@@ -318,6 +330,15 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		*next_us = (__app_dbg_prev_print + 1000000000U - now) / 1000U;
 	} else
 		*next_us = 1000000U;
+	if (!iip_ops_util_core()) {
+		if (!__app_close_posted && __app_duration && __app_start_time) {
+			if (__app_start_time + __app_duration * 1000000000UL < NOW()) {
+				printf("%lu sec has passed, now stopping the program ...\n", __app_duration);
+				signal(SIGINT, SIG_DFL);
+				__app_close_posted = 1;
+			}
+		}
+	}
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		if (__app_close_posted) {
@@ -580,7 +601,7 @@ static void __app_init(int argc, char *const *argv)
 {
 	{ /* parse arguments */
 		int ch, cnt = 0;
-		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:r:s:")) != -1) {
+		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:r:s:t:")) != -1) {
 			cnt += 2;
 			switch (ch) {
 			case 'c':
@@ -622,6 +643,9 @@ static void __app_init(int argc, char *const *argv)
 			case 's':
 				assert(inet_pton(AF_INET, optarg, &__app_remote_ip4_addr_be) == 1);
 				break;
+			case 't':
+				__app_duration = strtol(optarg, NULL, 10);
+				break;
 			default:
 				assert(0);
 				break;
@@ -649,7 +673,7 @@ static void __app_init(int argc, char *const *argv)
 		assert(__app_concurrency);
 		if (__app_pacing_pps)
 			assert(__app_io_depth == 1);
-		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u io-depth %u pacing %lu\n",
+		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u, io-depth %u, pacing %lu rps, duration %lu sec\n",
 				(__app_remote_ip4_addr_be >>  0) & 0x0ff,
 				(__app_remote_ip4_addr_be >>  8) & 0x0ff,
 				(__app_remote_ip4_addr_be >> 16) & 0x0ff,
@@ -657,7 +681,8 @@ static void __app_init(int argc, char *const *argv)
 				ntohs(__app_l4_port_be),
 				__app_concurrency,
 				__app_io_depth,
-				__app_pacing_pps);
+				__app_pacing_pps,
+				__app_duration);
 	} else {
 		assert(!__app_pacing_pps);
 		switch (__app_mode) {
@@ -731,6 +756,12 @@ int main(int argc, char *const *argv)
 			printf("latency in ns (%lu samples): %s, %s, %s, %s\n",
 					__app_latency_cnt, p50th, p90th, p99th, p999th);
 		}
+		printf("throughput rx %lu bps (%lu pps), tx %lu bps (%lu pps)\n",
+				__rx_bytes_prev[0] * 8,
+				__rx_pps_prev[0],
+				__tx_bytes_prev[0] * 8,
+				__tx_pps_prev[0]
+		      );
 		numa_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
 	}
 	return ret;
