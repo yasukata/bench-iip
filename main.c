@@ -28,6 +28,8 @@
 
 #include <arpa/inet.h>
 
+#include <numa.h>
+
 #define __iip_memcpy	memcpy
 #define __iip_memset	memset
 #define __iip_memcmp	memcmp
@@ -295,7 +297,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 static void *__app_thread_init(void *workspace, void *opaque)
 {
 	struct thread_data *td;
-	assert((td = malloc(sizeof(struct thread_data))) != NULL);
+	assert((td = numa_alloc_local(sizeof(struct thread_data))) != NULL);
 	memset(td, 0, sizeof(struct thread_data));
 	td->workspace = workspace;
 	if (__app_payload_len) {
@@ -365,7 +367,7 @@ static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, vo
 
 static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
 {
-	struct tcp_opaque *to = (struct tcp_opaque *) malloc(sizeof(struct tcp_opaque));
+	struct tcp_opaque *to = (struct tcp_opaque *) numa_alloc_local(sizeof(struct tcp_opaque));
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
 	to->handle = handle;
@@ -385,7 +387,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		printf("[%u] connected (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
 		{
-			struct tcp_opaque *to = malloc(sizeof(struct tcp_opaque));
+			struct tcp_opaque *to = numa_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
 			memset(to, 0, sizeof(struct tcp_opaque));
 			to->handle = handle;
@@ -450,7 +452,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 			for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 				if (tcp_opaque == td->tcp.conn_list[i]) {
 					td->tcp.conn_list[i] = td->tcp.conn_list[--td->tcp.conn_list_cnt];
-					free(tcp_opaque);
+					numa_free(tcp_opaque, sizeof(struct tcp_opaque));
 					break;
 				}
 			}
