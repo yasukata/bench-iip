@@ -218,10 +218,9 @@ Here, we show some rough numbers obtained from this benchmark tool and compariso
 
 #include <pthread.h>
 
-static size_t httpdatalen = 0;
-static char *httpbuf = NULL;
-
 static unsigned int should_stop = 0;
+static unsigned short payload_len = 1;
+static char payload_buf[0xffff] = { 0 };
 
 static void sig_h(int s __attribute__((unused)))
 {
@@ -272,10 +271,8 @@ static void *server_thread(void *data)
 					if (rx <= 0) {
 						printf("%lx: close %d\n", pthread_self(), ev[i].data.fd);
 						close(ev[i].data.fd);
-					} else {
-						if (!strncmp(buf, "GET", 3))
-							assert(write(ev[i].data.fd, httpbuf, httpdatalen) == httpdatalen);
-					}
+					} else
+						assert(write(ev[i].data.fd, payload_buf, payload_len) == payload_len);
 				}
 			}
 		}
@@ -289,14 +286,13 @@ static void *server_thread(void *data)
 int main(int argc, char *const *argv)
 {
 	unsigned short port = 0, num_thread = 0;
-	unsigned int content_len = 1;
 
 	{
 		int ch;
 		while ((ch = getopt(argc, argv, "l:p:t:")) != -1) {
 			switch (ch) {
 				case 'l':
-					content_len = atoi(optarg);
+					payload_len = atoi(optarg);
 					break;
 				case 'p':
 					port = atoi(optarg);
@@ -352,19 +348,6 @@ int main(int argc, char *const *argv)
 		assert(!listen(fd, SOMAXCONN));
 
 		signal(SIGINT, sig_h);
-
-		{
-			size_t buflen = content_len + 256 /* for http hdr */;
-			char *content;
-			assert((httpbuf = (char *) malloc(buflen)) != NULL);
-			assert((content = (char *) malloc(content_len + 1)) != NULL);
-			memset(content, 'A', content_len);
-			content[content_len] = '\0';
-			httpdatalen = snprintf(httpbuf, buflen, "HTTP/1.1 200 OK\r\nContent-Length: %u\r\nConnection: keep-alive\r\n\r\n%s",
-					content_len, content);
-			free(content);
-			printf("http data length: %lu bytes\n", httpdatalen);
-		}
 
 		{
 			pthread_t *th;
