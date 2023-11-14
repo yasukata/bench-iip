@@ -483,11 +483,11 @@ static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void
 						PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be,
 						PB_UDP(iip_ops_pkt_get_data(m, opaque))->src_be,
 						_m, opaque));
-			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_bytes += __app_payload_len;
-			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_pkt++;
+			td->monitor.counter[td->monitor.idx].tx_bytes += __app_payload_len;
+			td->monitor.counter[td->monitor.idx].tx_pkt++;
 		}
-		__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].rx_bytes += PB_UDP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
-		__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].rx_pkt++;
+		td->monitor.counter[td->monitor.idx].rx_bytes += PB_UDP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
+		td->monitor.counter[td->monitor.idx].rx_pkt++;
 	}
 }
 
