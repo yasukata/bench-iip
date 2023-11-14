@@ -129,10 +129,15 @@ In the example above,
 ### 3rd section: for the benchmark tool
 
 - ```-c```: concurrency (for the client mode)
+- ```-d```: io depth (for the client mode)
+- ```-g```: mode (1: ping-pong, 2: burst); in the burst mode, a TCP client send data when it receives a TCP ack, and a TCP server ignores incoming data.
+- ```-l```: payload length (if ```-m``` is not specified)
 - ```-m```: a string to be sent as the payload
 - ```-n```: protocol number, either 6 (TCP) or 17 (UDP) (for the client mode) : default is TCP
 - ```-p```: the server port (to listen on for the server mode, to connect to for the client mode)
+- ```-r```: targeted throughput rate (requests/sec) for each thread (for the client mode)
 - ```-s```: the server IP address to be connected (for the client mode)
+- ```-t```: duration of the experiment in second (0 means infinite)
 
 ## using a physical NIC
 
