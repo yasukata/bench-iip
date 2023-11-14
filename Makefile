@@ -4,7 +4,7 @@ CFLAGS += -O3 -pipe -g -rdynamic
 CFLAGS += -Werror -Wextra -Wall
 CFLAGS += -DIOSUB_MAIN_C=$(IOSUB_DIR)/main.c
 
-LDFLAGS +=
+LDFLAGS += -lnuma
 
 C_OBJS = main.o
 
