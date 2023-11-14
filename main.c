@@ -49,6 +49,8 @@ static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t,
 
 #define MAX_THREAD (256)
 
+#define NUM_MONITOR_LATENCY_RECORD (5000000UL)
+
 struct thread_data {
 	void *workspace;
 	void *pkt_payload;
@@ -68,12 +70,19 @@ struct thread_data {
 			uint64_t rx_bytes;
 			uint64_t tx_bytes;
 		} counter[2];
+		struct {
+			uint64_t cnt;
+			uint64_t val[NUM_MONITOR_LATENCY_RECORD];
+		} latency;
 	} monitor;
 	uint64_t prev_arp;
 };
 
 struct tcp_opaque {
 	void *handle;
+	struct {
+		uint64_t ts;
+	} monitor;
 };
 
 static uint8_t __app_close_posted = 0;
@@ -92,6 +101,9 @@ static uint32_t __app_concurrency = 1;
 static uint8_t __app_proto_id = 6; /* tcp */
 static uint8_t __app_mode = 1;
 static uint8_t __app_io_depth = 1;
+
+static uint64_t __app_latency_cnt = 0;
+static uint64_t *__app_latency_val = NULL;
 
 static uint8_t __app_should_stop(void *opaque)
 {
@@ -275,6 +287,24 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			switch (td->close_state) {
 				case 0:
 					printf("close requested\n");
+					if (__app_remote_ip4_addr_be && !iip_ops_util_core()) {
+						assert((__app_latency_val = numa_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
+						{
+							uint16_t i;
+							for (i = 0; i < MAX_THREAD; i++) {
+								if (__app_td[i]) {
+									uint64_t cnt = __app_td[i]->monitor.latency.cnt;
+									asm volatile ("" ::: "memory");
+									if (NUM_MONITOR_LATENCY_RECORD < cnt)
+										cnt = NUM_MONITOR_LATENCY_RECORD;
+									memcpy(&__app_latency_val[__app_latency_cnt],
+											__app_td[i]->monitor.latency.val,
+											sizeof(__app_td[i]->monitor.latency.val[0]) * cnt);
+									__app_latency_cnt += cnt;
+								}
+							}
+						}
+					}
 					{
 						if (td->tcp.conn_list_cnt) {
 							uint16_t i;
@@ -341,7 +371,7 @@ static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __att
 	printf("received icmp reply\n");
 }
 
-static void __tcp_send_content(void *handle, void *opaque)
+static void __tcp_send_content(void *handle, struct tcp_opaque *to, void *opaque)
 {
 	void **opaque_array = (void *) opaque;
 	{
@@ -350,6 +380,8 @@ static void __tcp_send_content(void *handle, void *opaque)
 			void *m;
 			assert(td->pkt_payload);
 			assert((m = iip_ops_pkt_clone(td->pkt_payload, opaque)) != NULL);
+			if (__app_mode == 1 /* ping-pong */)
+				to->monitor.ts = NOW();
 			assert(!iip_tcp_send(td->workspace, handle, m, opaque));
 			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_bytes += __app_payload_len;
 			__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].tx_pkt++;
@@ -395,7 +427,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 			{
 				uint16_t k;
 				for (k = 0; k < __app_io_depth; k++)
-					__tcp_send_content(handle, opaque);
+					__tcp_send_content(handle, to, opaque);
 			}
 			return (void *) to;
 		}
@@ -403,16 +435,38 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 }
 
 static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
-				void *tcp_opaque __attribute__((unused)),
+				void *tcp_opaque,
 				void *opaque)
 {
-	__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].rx_bytes += PB_TCP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
-	__app_td[iip_ops_util_core()]->monitor.counter[__app_td[iip_ops_util_core()]->monitor.idx].rx_pkt++;
+	{
+		void **opaque_array = (void *) opaque;
+		{
+			struct thread_data *td = (struct thread_data *) opaque_array[1];
+			{
+				uint8_t idx = td->monitor.idx;
+				asm volatile ("" ::: "memory");
+				td->monitor.counter[idx].rx_bytes += PB_TCP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
+				td->monitor.counter[idx].rx_pkt++;
+			}
+		}
+	}
+
 	iip_tcp_rxbuf_consumed(mem, handle, 1, opaque);
 
 	switch (__app_mode) {
 	case 1: /* ping-pong */
-		__tcp_send_content(handle, opaque);
+		if (__app_remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
+			void **opaque_array = (void *) opaque;
+			{
+				struct thread_data *td = (struct thread_data *) opaque_array[1];
+				{
+					uint64_t now = NOW();
+					td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
+					((struct tcp_opaque *) tcp_opaque)->monitor.ts = now;
+				}
+			}
+		}
+		__tcp_send_content(handle, tcp_opaque, opaque);
 		break;
 	case 2: /* burst */
 		break;
@@ -425,7 +479,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 			      void *handle,
 			      void *m __attribute__((unused)),
-			      void *tcp_opaque __attribute__((unused)),
+			      void *tcp_opaque,
 			      void *opaque)
 {
 	if (__app_remote_ip4_addr_be) { /* client */
@@ -433,7 +487,7 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 		case 1: /* ping-pong */
 			break;
 		case 2: /* burst */
-			__tcp_send_content(handle, opaque);
+			__tcp_send_content(handle, tcp_opaque, opaque);
 			break;
 		default:
 			assert(0);
@@ -598,7 +652,54 @@ static void __app_init(int argc, char *const *argv)
 #undef _M2S
 #undef M2S
 
+static int qsort_uint64_cmp(const void *a, const void *b)
+{
+	if (*((uint64_t *) a) == *((uint64_t *) b))
+		return 0;
+	else if (*((uint64_t *) a) < *((uint64_t *) b))
+		return -1;
+	else
+		return 1;
+}
+
 int main(int argc, char *const *argv)
 {
-	return __iosub_main(argc, argv);
+	int ret = __iosub_main(argc, argv);
+	if (!iip_ops_util_core() && __app_latency_val) {
+		static uint64_t l_50th, l_90th, l_99th, l_999th;
+		printf("calculating latency ...\n");
+		qsort(__app_latency_val, __app_latency_cnt, sizeof(__app_td[0]->monitor.latency.val[0]), qsort_uint64_cmp);
+		if (2 < __app_latency_cnt)
+			l_50th = __app_latency_val[__app_latency_cnt / 2];
+		if (100 <= __app_latency_cnt) {
+			l_90th = __app_latency_val[(__app_latency_cnt / 10) * 9];
+			l_99th = __app_latency_val[(__app_latency_cnt / 100) * 99];
+		}
+		if (1000 <= __app_latency_cnt)
+			l_999th = __app_latency_val[(__app_latency_cnt / 1000) * 999];
+		numa_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+		{
+			char b50th[256], *p50th = b50th, b90th[256], *p90th = b90th, b99th[256], *p99th = b99th, b999th[256], *p999th = b999th;
+			if (l_50th)
+				snprintf(b50th, sizeof(b50th), "50%%-ile %lu", l_50th);
+			else
+				snprintf(b50th, sizeof(b50th), "50%%-ile -");
+			if (l_90th)
+				snprintf(b90th, sizeof(b90th), "90%%-ile %lu", l_90th);
+			else
+				snprintf(b90th, sizeof(b90th), "90%%-ile -");
+			if (l_99th)
+				snprintf(b99th, sizeof(b99th), "99%%-ile %lu", l_99th);
+			else
+				snprintf(b99th, sizeof(b99th), "99%%-ile -");
+			if (l_999th)
+				snprintf(b999th, sizeof(b999th), "99.9%%-ile %lu", l_999th);
+			else
+				snprintf(b999th, sizeof(b999th), "99.9%%-ile -");
+			printf("latency in ns (%lu samples): %s, %s, %s, %s\n",
+					__app_latency_cnt, p50th, p90th, p99th, p999th);
+		}
+		numa_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+	}
+	return ret;
 }
