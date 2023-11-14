@@ -163,12 +163,12 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								__app_tcp_port_affinty_map[i] = port;
 							else {
 								assert(!i);
-								printf("RSS not supported\n");
+								printf("RSS not supported\n"); fflush(stdout);
 								__app_tcp_port_affinty_map[i] = 0;
 								break;
 							}
 						}
-						printf("ok\n");
+						printf("ok\n"); fflush(stdout);
 					}
 				}
 				td->app_state = 1;
@@ -272,7 +272,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			break;
 		}
 	}
-	if (!iip_ops_util_core()) {
+	if (!__app_close_posted && !iip_ops_util_core()) {
 		uint64_t now = NOW();
 		if (1000000000UL < now - __app_dbg_prev_print) {
 			{
@@ -300,7 +300,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 										__app_td[i]->monitor.counter[idx].rx_pkt,
 										__app_td[i]->monitor.counter[idx].tx_bytes / 125000UL,
 										__app_td[i]->monitor.counter[idx].tx_pkt
-										);
+										); fflush(stdout);
 								rx_bytes += __app_td[i]->monitor.counter[idx].rx_bytes;
 								tx_bytes += __app_td[i]->monitor.counter[idx].tx_bytes;
 								rx_pkt += __app_td[i]->monitor.counter[idx].rx_pkt;
@@ -323,7 +323,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						rx_pkt,
 						tx_bytes / 125000UL,
 						tx_pkt
-					  );
+					  ); fflush(stdout);
 			}
 			__app_dbg_prev_print = now;
 		}
@@ -333,7 +333,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 	if (!iip_ops_util_core()) {
 		if (!__app_close_posted && __app_duration && __app_start_time) {
 			if (__app_start_time + __app_duration * 1000000000UL < NOW()) {
-				printf("%lu sec has passed, now stopping the program ...\n", __app_duration);
+				printf("%lu sec has passed, now stopping the program ...\n", __app_duration); fflush(stdout);
 				signal(SIGINT, SIG_DFL);
 				__app_close_posted = 1;
 			}
@@ -344,8 +344,9 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		if (__app_close_posted) {
 			switch (td->close_state) {
 				case 0:
-					if (!iip_ops_util_core())
-						printf("close requested\n");
+					if (!iip_ops_util_core()) {
+						printf("close requested\n"); fflush(stdout);
+					}
 					if (__app_remote_ip4_addr_be && !iip_ops_util_core()) {
 						assert((__app_latency_val = numa_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
 						{
@@ -664,10 +665,10 @@ static void __app_init(int argc, char *const *argv)
 	if (__app_remote_ip4_addr_be) {
 		switch (__app_mode) {
 		case 1: /* ping-pong */
-			printf("client: ping-pong mode\n");
+			printf("client: ping-pong mode\n"); fflush(stdout);
 			break;
 		case 2: /* burst */
-			printf("client: burst mode\n");
+			printf("client: burst mode\n"); fflush(stdout);
 			break;
 		default:
 			assert(0);
@@ -686,22 +687,22 @@ static void __app_init(int argc, char *const *argv)
 				__app_concurrency,
 				__app_io_depth,
 				__app_pacing_pps,
-				__app_duration);
+				__app_duration); fflush(stdout);
 	} else {
 		assert(!__app_pacing_pps);
 		switch (__app_mode) {
 		case 1: /* ping-pong */
-			printf("server: ping-pong mode\n");
+			printf("server: ping-pong mode\n"); fflush(stdout);
 			assert(__app_payload_len);
 			break;
 		case 2: /* burst (ignore) */
-			printf("server: burst mode (just ignore incoming data)\n");
+			printf("server: burst mode (just ignore incoming data)\n"); fflush(stdout);
 			break;
 		default:
 			assert(0);
 			break;
 		}
-		printf("server listens on %u\n", ntohs(__app_l4_port_be));
+		printf("server listens on %u\n", ntohs(__app_l4_port_be)); fflush(stdout);
 	}
 
 	signal(SIGINT, sig_h);
@@ -728,7 +729,7 @@ int main(int argc, char *const *argv)
 	int ret = __iosub_main(argc, argv);
 	if (!iip_ops_util_core() && __app_latency_val) {
 		static uint64_t l_50th, l_90th, l_99th, l_999th;
-		printf("calculating latency ...\n");
+		printf("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
 		qsort(__app_latency_val, __app_latency_cnt, sizeof(__app_td[0]->monitor.latency.val[0]), qsort_uint64_cmp);
 		if (2 < __app_latency_cnt)
 			l_50th = __app_latency_val[__app_latency_cnt / 2];
@@ -742,30 +743,29 @@ int main(int argc, char *const *argv)
 		{
 			char b50th[256], *p50th = b50th, b90th[256], *p90th = b90th, b99th[256], *p99th = b99th, b999th[256], *p999th = b999th;
 			if (l_50th)
-				snprintf(b50th, sizeof(b50th), "50%%-ile %lu", l_50th);
+				snprintf(b50th, sizeof(b50th), "50%%-ile %lu ns", l_50th);
 			else
 				snprintf(b50th, sizeof(b50th), "50%%-ile -");
 			if (l_90th)
-				snprintf(b90th, sizeof(b90th), "90%%-ile %lu", l_90th);
+				snprintf(b90th, sizeof(b90th), "90%%-ile %lu ns", l_90th);
 			else
 				snprintf(b90th, sizeof(b90th), "90%%-ile -");
 			if (l_99th)
-				snprintf(b99th, sizeof(b99th), "99%%-ile %lu", l_99th);
+				snprintf(b99th, sizeof(b99th), "99%%-ile %lu ns", l_99th);
 			else
 				snprintf(b99th, sizeof(b99th), "99%%-ile -");
 			if (l_999th)
-				snprintf(b999th, sizeof(b999th), "99.9%%-ile %lu", l_999th);
+				snprintf(b999th, sizeof(b999th), "99.9%%-ile %lu ns", l_999th);
 			else
 				snprintf(b999th, sizeof(b999th), "99.9%%-ile -");
-			printf("latency in ns (%lu samples): %s, %s, %s, %s\n",
-					__app_latency_cnt, p50th, p90th, p99th, p999th);
+			printf("throughput rx %lu bps %lu pps, tx %lu bps %lu pps, latency %s %s %s %s\n",
+					__rx_bytes_prev[0] * 8,
+					__rx_pps_prev[0],
+					__tx_bytes_prev[0] * 8,
+					__tx_pps_prev[0],
+					p50th, p90th, p99th, p999th
+			      ); fflush(stdout);
 		}
-		printf("throughput rx %lu bps (%lu pps), tx %lu bps (%lu pps)\n",
-				__rx_bytes_prev[0] * 8,
-				__rx_pps_prev[0],
-				__tx_bytes_prev[0] * 8,
-				__tx_pps_prev[0]
-		      );
 		numa_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
 	}
 	return ret;
