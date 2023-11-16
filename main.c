@@ -603,7 +603,7 @@ static void __app_init(int argc, char *const *argv)
 {
 	{ /* parse arguments */
 		int ch, cnt = 0;
-		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:r:s:t:")) != -1) {
+		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:r:s:t:v:")) != -1) {
 			cnt += 2;
 			switch (ch) {
 			case 'c':
@@ -649,7 +649,7 @@ static void __app_init(int argc, char *const *argv)
 				__app_duration = strtol(optarg, NULL, 10);
 				break;
 			case 'v':
-				iip_verbose_level = 1;
+				iip_verbose_level = atoi(optarg);
 				break;
 			default:
 				assert(0);
