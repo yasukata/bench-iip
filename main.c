@@ -95,6 +95,7 @@ struct tcp_opaque {
 };
 
 static uint8_t __app_close_posted = 0;
+static uint8_t __app_remote_stop_handled = 0;
 
 static _Atomic uint64_t __app_active_conn = 0;
 static uint16_t __app_tcp_port_affinty_map[0xffff];
@@ -351,6 +352,23 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		if (!__app_close_posted && __app_duration && __app_start_time) {
 			if (__app_start_time + __app_duration * 1000000000UL < NOW()) {
 				printf("%lu sec has passed, now stopping the program ...\n", __app_duration); fflush(stdout);
+				{
+					uint16_t i;
+					for (i = 0; i < MAX_PORT_CNT; i++) {
+						if (iip_ops_util_core() == helper_ip4_get_connection_affinity(6 /* tcp */,
+									ip4_be, htons(i),
+									__app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
+									opaque)) {
+							printf("send stop request to the remote host (local port %u)\n", i); fflush(stdout);
+							assert(!iip_tcp_connect(__app_td[iip_ops_util_core()]->workspace,
+										mac, ip4_be, htons(i),
+										__app_remote_mac, __app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
+										opaque));
+							break;
+						}
+					}
+					assert(i != MAX_PORT_CNT);
+				}
 				signal(SIGINT, SIG_DFL);
 				__app_close_posted = 1;
 			}
@@ -361,6 +379,10 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		if (__app_close_posted) {
 			switch (td->close_state) {
 				case 0:
+					if (__app_remote_ip4_addr_be && !iip_ops_util_core()) {
+						if (!__app_remote_stop_handled)
+							break;
+					}
 					if (!iip_ops_util_core()) {
 						printf("close requested\n"); fflush(stdout);
 					}
@@ -455,13 +477,15 @@ static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __att
 
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
 {
+	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == htons(50000)) /* to remote shutdown */
+		return 1;
 	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == __app_l4_port_be)
 		return 1;
 	else
 		return 0;
 }
 
-static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
+static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m, void *opaque)
 {
 	struct tcp_opaque *to = (struct tcp_opaque *) numa_alloc_local(sizeof(struct tcp_opaque));
 	assert(to);
@@ -472,6 +496,11 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 		void **opaque_array = (void *) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
+	}
+	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == htons(50000 /* remote shutdown */)) {
+		printf("close requested via network\n"); fflush(stdout);
+		__app_close_posted = 1;
+		signal(SIGINT, SIG_DFL);
 	}
 	return (void *) to;
 }
@@ -488,7 +517,10 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 			memset(to, 0, sizeof(struct tcp_opaque));
 			to->handle = handle;
 			td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
-			{
+			if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be == htons(50000 /* remote shutdown */)) {
+				printf("remote stop request is handled\n");
+				__app_remote_stop_handled = 1;
+			} else {
 				uint16_t i;
 				for (i = 0; i < __app_io_depth; i++) {
 					__tcp_send_content(handle, to, to->cur, 1, opaque);
@@ -625,6 +657,7 @@ static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void
 static void sig_h(int sig __attribute__((unused)))
 {
 	__app_close_posted = 1;
+	__app_remote_stop_handled = 1;
 	signal(SIGINT, SIG_DFL);
 }
 
@@ -690,6 +723,7 @@ static void __app_init(int argc, char *const *argv)
 	}
 
 	assert(__app_l4_port_be);
+	assert(__app_l4_port_be != htons(50000 /* remote shut down */));
 
 	if (__app_mode == 1) { /* ping-pong mode only accepts data fit in a packet */
 		assert(__app_payload_len < MAX_PAYLOAD_LEN);
