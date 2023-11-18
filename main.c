@@ -749,13 +749,14 @@ static void __app_init(int argc, char *const *argv)
 		assert(__app_concurrency);
 		if (__app_pacing_pps)
 			assert(__app_io_depth == 1);
-		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u, io-depth %u, pacing %lu rps, duration %lu sec\n",
+		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u, data len %u, io-depth %u, pacing %lu rps, duration %lu sec\n",
 				(__app_remote_ip4_addr_be >>  0) & 0x0ff,
 				(__app_remote_ip4_addr_be >>  8) & 0x0ff,
 				(__app_remote_ip4_addr_be >> 16) & 0x0ff,
 				(__app_remote_ip4_addr_be >> 24) & 0x0ff,
 				ntohs(__app_l4_port_be),
 				__app_concurrency,
+				__app_payload_len,
 				__app_io_depth,
 				__app_pacing_pps,
 				__app_duration); fflush(stdout);
@@ -773,7 +774,7 @@ static void __app_init(int argc, char *const *argv)
 			assert(0);
 			break;
 		}
-		printf("server listens on %u\n", ntohs(__app_l4_port_be)); fflush(stdout);
+		printf("server listens on %u, data len %u\n", ntohs(__app_l4_port_be), __app_payload_len); fflush(stdout);
 	}
 
 	signal(SIGINT, sig_h);
