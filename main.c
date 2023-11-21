@@ -354,7 +354,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				printf("%lu sec has passed, now stopping the program ...\n", __app_duration); fflush(stdout);
 				{
 					uint16_t i;
-					for (i = 0; i < MAX_PORT_CNT; i++) {
+					for (i = MAX_PORT_CNT; i < MAX_PORT_CNT + MAX_PORT_CNT; i++) {
 						if (iip_ops_util_core() == helper_ip4_get_connection_affinity(6 /* tcp */,
 									ip4_be, htons(i),
 									__app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
@@ -367,7 +367,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 							break;
 						}
 					}
-					assert(i != MAX_PORT_CNT);
+					assert(i != MAX_PORT_CNT + MAX_PORT_CNT);
 				}
 				signal(SIGINT, SIG_DFL);
 				__app_close_posted = 1;
