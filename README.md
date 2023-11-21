@@ -200,9 +200,37 @@ sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -l 0 -
 
 ## rough numbers
 
-Here, we show some rough numbers obtained from this benchmark tool and comparison with the following server program based on the Linux kernel TCP/IP stack.
+Here, we show some rough numbers obtained from this benchmark tool.
+
+### machines
+
+Two machines having the same configuration.
+
+- CPU: Two of 16-core Intel(R) Xeon(R) Gold 6326 CPU @ 2.90GHz (32 cores in total)
+- NIC: Mellanox ConnectX-5 100 Gbps NIC (the NICs of the two machines are directly connected via a cable)
+- OS: Linux 6.2
+
+### multi-core server performance
+
+- client (iip and DPDK)
+
+```
+cnt=0; while [ $cnt -le 31 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -l 1 -t 5 -c $(($cnt+1)) 2>&1 | tee -a ./result.txt; cnt=$(($cnt+1)); done
+```
+
+- server (iip and DPDK)
+
+```
+cnt=0; while [ $cnt -le 31 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-$cnt --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1; cnt=$(($cnt+1)); done
+```
+
+- server (Linux)
 
 ```c
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -217,10 +245,26 @@ Here, we show some rough numbers obtained from this benchmark tool and compariso
 #include <arpa/inet.h>
 
 #include <pthread.h>
+#include <numa.h>
+
+#define MAX_CORE (256)
 
 static unsigned int should_stop = 0;
+static unsigned int mode = 0;
 static unsigned short payload_len = 1;
 static char payload_buf[0xffff] = { 0 };
+
+struct monitor_data {
+	unsigned short idx;
+	struct {
+		unsigned long rx_cnt;
+		unsigned long tx_cnt;
+		unsigned long rx_bytes;
+		unsigned long tx_bytes;
+	} counter[2];
+};
+
+static struct monitor_data *monitor[MAX_CORE] = { 0 };
 
 static void sig_h(int s __attribute__((unused)))
 {
@@ -230,81 +274,241 @@ static void sig_h(int s __attribute__((unused)))
 
 static void *server_thread(void *data)
 {
-	int epfd;
-
-	assert((epfd = epoll_create1(EPOLL_CLOEXEC)) != -1);
-
+	printf("core %lu : server fd %lu\n", (((unsigned long) data) & 0xffffffff), (((unsigned long) data) >> 32));
 	{
-		struct epoll_event ev = {
-			.events = EPOLLIN,
-			.data.fd = (unsigned long) data,
-		};
-		assert(!epoll_ctl(epfd, EPOLL_CTL_ADD, ev.data.fd, &ev));
+		cpu_set_t c;
+		CPU_ZERO(&c);
+		CPU_SET((((unsigned long) data) & 0xffffffff), &c);
+		pthread_setaffinity_np(pthread_self(), sizeof(c), &c);
 	}
-
-	while (!should_stop) {
-		struct epoll_event ev[64];
-		int nfd = epoll_wait(epfd, ev, 64, 100);
+	{
+		struct monitor_data *mon;
+		assert((mon = numa_alloc_local(sizeof(struct monitor_data))) != NULL);
+		memset(mon, 0, sizeof(struct monitor_data));
+		monitor[(((unsigned long) data) & 0xffffffff)] = mon;
 		{
-			int i;
-			for (i = 0; i < nfd; i++) {
-				if (ev[i].data.fd == (unsigned long) data) {
-					while (1) {
-						struct sockaddr_in sin;
-						socklen_t addrlen;
-						{
-							struct epoll_event _ev = {
-								.events = EPOLLIN,
-								.data.fd = accept(ev[i].data.fd, (struct sockaddr *) &sin, &addrlen),
-							};
-							if (_ev.data.fd == -1) {
-								assert(errno == EAGAIN);
-								break;
+			int epfd;
+
+			assert((epfd = epoll_create1(EPOLL_CLOEXEC)) != -1);
+
+			{
+				struct epoll_event ev = {
+					.events = EPOLLIN,
+					.data.fd = (((unsigned long) data) >> 32),
+				};
+				assert(!epoll_ctl(epfd, EPOLL_CTL_ADD, ev.data.fd, &ev));
+			}
+
+			while (!should_stop) {
+				struct epoll_event ev[64];
+				int nfd = epoll_wait(epfd, ev, 64, 100);
+				{
+					int i;
+					for (i = 0; i < nfd; i++) {
+						if ((unsigned long) ev[i].data.fd == (((unsigned long) data) >> 32)) {
+							while (1) {
+								struct sockaddr_in sin;
+								socklen_t addrlen;
+								{
+									struct epoll_event _ev = {
+										.events = EPOLLIN,
+										.data.fd = accept(ev[i].data.fd, (struct sockaddr *) &sin, &addrlen),
+									};
+									if (_ev.data.fd == -1) {
+										assert(errno == EAGAIN);
+										break;
+									}
+									assert(!epoll_ctl(epfd, EPOLL_CTL_ADD, _ev.data.fd, &_ev));
+								}
 							}
-							assert(!epoll_ctl(epfd, EPOLL_CTL_ADD, _ev.data.fd, &_ev));
-							printf("%lx: accept %d\n", pthread_self(), _ev.data.fd);
+						} else {
+							char buf[0x10000];
+							ssize_t rx = read(ev[i].data.fd, buf, sizeof(buf));
+							if (rx <= 0)
+								close(ev[i].data.fd);
+							else {
+								mon->counter[mon->idx].rx_bytes += rx;
+								mon->counter[mon->idx].rx_cnt++;
+								if (mode == 1 /* ping-pong */) {
+									assert(write(ev[i].data.fd, payload_buf, payload_len) == payload_len);
+									mon->counter[mon->idx].tx_bytes += payload_len;
+									mon->counter[mon->idx].tx_cnt++;
+								}
+							}
 						}
 					}
-				} else {
-					char buf[0x1000];
-					ssize_t rx = read(ev[i].data.fd, buf, sizeof(buf));
-					if (rx <= 0) {
-						printf("%lx: close %d\n", pthread_self(), ev[i].data.fd);
-						close(ev[i].data.fd);
-					} else
-						assert(write(ev[i].data.fd, payload_buf, payload_len) == payload_len);
 				}
+			}
+			close(epfd);
+		}
+		numa_free(mon, sizeof(struct monitor_data));
+	}
+
+	pthread_exit(NULL);
+}
+
+static void *remote_stop_thread(void *data)
+{
+	int *ready = (int *) data, fd;
+
+	assert((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) != -1);
+	{
+		int v = 1;
+		assert(!setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &v, sizeof(v)));
+	}
+	{
+		int v = 1;
+		assert(!setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &v, sizeof(v)));
+	}
+	{
+		int v = 1;
+		assert(!ioctl(fd, FIONBIO, &v));
+	}
+	{
+		struct sockaddr_in sin = {
+			.sin_family = AF_INET,
+			.sin_addr.s_addr = htonl(INADDR_ANY),
+			.sin_port = htons(50000 /* remote shutdown */),
+		};
+		assert(!bind(fd, (struct sockaddr *) &sin, sizeof(sin)));
+	}
+	assert(!listen(fd, SOMAXCONN));
+
+	asm volatile ("" ::: "memory");
+
+	*ready = 1;
+
+	while (!should_stop) {
+		fd_set fds;
+		FD_ZERO(&fds);
+		FD_SET(fd, &fds);
+		{
+			struct timeval tv = { .tv_sec = 1, };
+			if (0 < select(fd + 1, &fds, NULL, NULL, &tv)) {
+				struct sockaddr_in sin;
+				socklen_t addrlen;
+				{
+					int newfd = accept(fd, (struct sockaddr *) &sin, &addrlen);
+					if (0 < newfd)
+						close(newfd);
+					printf("close requested\n");
+				}
+				sig_h(0);
 			}
 		}
 	}
 
-	close(epfd);
+	close(fd);
 
 	pthread_exit(NULL);
 }
 
 int main(int argc, char *const *argv)
 {
-	unsigned short port = 0, num_thread = 0;
+	unsigned short port = 0, num_cores = 0, core_list[MAX_CORE] = { 0 };
+	pthread_t remote_stop_th;
+
+	{
+		int ready = 0;
+		assert(!pthread_create(&remote_stop_th, NULL, remote_stop_thread, &ready));
+		while (!ready) usleep(10000);
+	}
 
 	{
 		int ch;
-		while ((ch = getopt(argc, argv, "l:p:t:")) != -1) {
+		while ((ch = getopt(argc, argv, "c:g:l:p:")) != -1) {
 			switch (ch) {
-				case 'l':
-					payload_len = atoi(optarg);
-					break;
-				case 'p':
-					port = atoi(optarg);
-					break;
-				case 't':
-					num_thread = atoi(optarg);
-					break;
-				default:
-					assert(0);
-					break;
+			case 'c':
+				{
+					ssize_t num_comma = 0, num_hyphen = 0;
+					{
+						size_t i;
+						for (i = 0; i < strlen(optarg); i++) {
+							switch (optarg[i]) {
+							case ',':
+								num_comma++;
+								break;
+							case '-':
+								num_hyphen++;
+								break;
+							}
+						}
+					}
+					if (num_hyphen) {
+						assert(num_hyphen == 1);
+						assert(!num_comma);
+						{
+							char *m;
+							assert((m = strdup(optarg)) != NULL);
+							{
+								size_t i;
+								for (i = 0; i < strlen(optarg); i++) {
+									if (m[i] == '-') {
+										m[i] = '\0';
+										break;
+									}
+								}
+								assert(i != strlen(optarg) - 1 && i != strlen(optarg));
+								{
+									uint16_t from = atoi(&m[0]), to = atoi(&m[i + 1]);
+									assert(from <= to);
+									{
+										uint16_t j, k;
+										for (j = 0, k = from; k <= to; j++, k++)
+											core_list[j] = k;
+										num_cores = j;
+									}
+								}
+							}
+							free(m);
+						}
+					} else if (num_comma) {
+						assert(num_comma + 1 < MAX_CORE);
+						{
+							char *m;
+							assert((m = strdup(optarg)) != NULL);
+							{
+								size_t i, j, k;
+								for (i = 0, j = 0, k = 0; i < strlen(optarg) + 1; i++) {
+									if (i == strlen(optarg) || m[i] == ',') {
+										m[i] = '\0';
+										if (j != i)
+											core_list[k++] = atoi(&m[j]);
+										j = i + 1;
+									}
+									if (i == strlen(optarg))
+										break;
+								}
+								assert(k);
+								num_cores = k;
+							}
+							free(m);
+						}
+					} else {
+						core_list[0] = atoi(optarg);
+						num_cores = 1;
+					}
+				}
+				break;
+			case 'g':
+				mode = atoi(optarg);
+				break;
+			case 'l':
+				payload_len = atoi(optarg);
+				break;
+			case 'p':
+				port = atoi(optarg);
+				break;
+			default:
+				assert(0);
+				break;
 			}
 		}
+	}
+
+	if (!num_cores) {
+		printf("please specify cores : -c\n");
+		exit(0);
 	}
 
 	if (!port) {
@@ -312,9 +516,25 @@ int main(int argc, char *const *argv)
 		exit(0);
 	}
 
-	if (!num_thread) {
-		printf("please specify number of threads : -t\n");
+	printf("start server with %u cores: ", num_cores);
+	{
+		uint16_t i;
+		for (i = 0; i < num_cores; i++)
+			printf("%u ", core_list[i]);
+	}
+	printf("\n");
+	printf("listen on port %u\n", port);
+	printf("payload len %u\n", payload_len);
+	fflush(stdout);
+
+	switch (mode) {
+	case 1:
+	case 2:
+		break;
+	default:
+		printf("please specify a mode 1 ping-pong 2 burst : -g\n");
 		exit(0);
+		break;
 	}
 
 	{
@@ -351,16 +571,60 @@ int main(int argc, char *const *argv)
 
 		{
 			pthread_t *th;
-			assert((th = calloc(num_thread, sizeof(pthread_t))) != NULL);
+			assert((th = calloc(num_cores, sizeof(pthread_t))) != NULL);
 			{
 				unsigned short i;
-				for (i = 0; i < num_thread; i++) {
-					assert(!pthread_create(&th[i], NULL, server_thread, (void *)((unsigned long) fd)));
+				for (i = 0; i < num_cores; i++)
+					assert(!pthread_create(&th[i], NULL, server_thread, (void *)(((unsigned long) fd << 32) | ((unsigned long) core_list[i] & 0xffffffff))));
+			}
+			while (!should_stop) {
+				{
+					unsigned short i;
+					for (i = 0; i < num_cores; i++) {
+						if (monitor[i]) {
+							if (monitor[i]->idx)
+								monitor[i]->idx = 0;
+							else
+								monitor[i]->idx = 1;
+						}
+					}
 				}
+				{
+					unsigned long rx_bytes = 0, rx_cnt = 0, tx_bytes = 0, tx_cnt = 0;
+					{
+						unsigned short i;
+						for (i = 0; i < num_cores; i++) {
+							if (monitor[i]) {
+								unsigned short idx = (monitor[i]->idx ? 0 : 1);
+								if (monitor[i]->counter[idx].rx_cnt || monitor[i]->counter[idx].tx_cnt) {
+									printf("[%u] payload: rx %lu Mbps (%lu read), tx %lu Mbps (%lu write)\n",
+											i,
+											monitor[i]->counter[idx].rx_bytes / 125000UL,
+											monitor[i]->counter[idx].rx_cnt,
+											monitor[i]->counter[idx].tx_bytes / 125000UL,
+											monitor[i]->counter[idx].tx_cnt
+									      ); fflush(stdout);
+									rx_bytes += monitor[i]->counter[idx].rx_bytes;
+									tx_bytes += monitor[i]->counter[idx].tx_bytes;
+									rx_cnt += monitor[i]->counter[idx].rx_cnt;
+									tx_cnt += monitor[i]->counter[idx].tx_cnt;
+								}
+								memset(&monitor[i]->counter[idx], 0, sizeof(monitor[i]->counter[idx]));
+							}
+						}
+					}
+					printf("paylaod total: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
+							rx_bytes / 125000UL,
+							rx_cnt,
+							tx_bytes / 125000UL,
+							tx_cnt
+					      ); fflush(stdout);
+				}
+				sleep(1);
 			}
 			{
 				unsigned short i;
-				for (i = 0; i < num_thread; i++)
+				for (i = 0; i < num_cores; i++)
 					assert(!pthread_join(th[i], NULL));
 			}
 			free(th);
@@ -369,13 +633,26 @@ int main(int argc, char *const *argv)
 		close(fd);
 	}
 
-	printf("Done\n");
+	pthread_join(remote_stop_th, NULL);
+
+	printf("done.\n");
 
 	return 0;
 }
 ```
 
-We compile the program above with:
+The following compiles the program above (```program_above.c```) and generates an executable file ```app```.
+
 ```
-gcc -O3 program_above.c -lpthread -o app
+gcc -Werror -Wextra -Wall -O3 program_above.c -lpthread -lnuma -o app
 ```
+
+Then, the following executes the compiled program ```app```.
+
+```
+ulimit -n unlimited; cnt=0; while [ $cnt -le 31 ]; do ./app -p 10000 -c 0-$cnt -g 1 -l 1; cnt=$(($cnt+1)); done
+```
+
+- results:
+
+<img src="https://raw.githubusercontent.com/yasukata/img/master/iip/multicore/throughput.svg" width="500px">
