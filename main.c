@@ -268,7 +268,6 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					}
 				}
 				td->app_state = 3;
-				__app_start_time = NOW();
 			}
 			break;
 		case 3:
@@ -511,6 +510,8 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		D("[%u] connected (%lu)", iip_ops_util_core(), ++__app_active_conn);
+		if (!__app_start_time)
+			__app_start_time = NOW();
 		{
 			struct tcp_opaque *to = numa_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
