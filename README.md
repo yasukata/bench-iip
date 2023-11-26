@@ -656,3 +656,26 @@ ulimit -n unlimited; cnt=0; while [ $cnt -le 31 ]; do ./app -p 10000 -c 0-$cnt -
 - results:
 
 <img src="https://raw.githubusercontent.com/yasukata/img/master/iip/multicore/throughput.svg" width="500px">
+
+### bulk transfer
+
+- receiver
+
+```
+cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 2; cnt=$(($cnt+1)); done
+```
+
+- sender
+
+```
+cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 2 -t 5 -c 1 -d 3 -l $((63488+63488*$cnt*32)) 1 2>&1 | tee -a ./result.txt; cnt=$(($cnt+1)); done
+```
+
+- note
+
+In the "all" case, the tx side leverages NIC offloading features for TSO and checksum along with zero-copy transmission, and the rx side activates the NIC offloading features of LRO and checksum.
+For the "w/o TSO" and "w/o TSO + w/o TX TCP checksum" cases, the tx side sets 2048 to the queue length.
+
+- results:
+
+<img src="https://raw.githubusercontent.com/yasukata/img/master/iip/bulk/large.svg" width="500px">
