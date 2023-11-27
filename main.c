@@ -350,7 +350,15 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 	if (!iip_ops_util_core()) {
 		if (!__app_close_posted && __app_duration && __app_start_time) {
 			if (__app_start_time + __app_duration * 1000000000UL < NOW()) {
-				printf("%lu sec has passed, now stopping the program ...\n", __app_duration); fflush(stdout);
+				{
+					time_t t = time(NULL);
+					struct tm lt;
+					localtime_r(&t, &lt);
+					printf("%04u-%02u-%02u %02u:%02u:%02u : %lu sec has passed, now stopping the program ...\n",
+							lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+							lt.tm_hour, lt.tm_min, lt.tm_sec,
+							__app_duration); fflush(stdout);
+				}
 				{
 					uint16_t i;
 					for (i = MAX_PORT_CNT; i < MAX_PORT_CNT + MAX_PORT_CNT; i++) {
@@ -383,7 +391,12 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 							break;
 					}
 					if (!iip_ops_util_core()) {
-						printf("close requested\n"); fflush(stdout);
+						time_t t = time(NULL);
+						struct tm lt;
+						localtime_r(&t, &lt);
+						printf("%04u-%02u-%02u %02u:%02u:%02u : close requested\n",
+								lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+								lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 					}
 					if (__app_remote_ip4_addr_be && !iip_ops_util_core()) {
 						assert((__app_latency_val = numa_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
@@ -497,7 +510,12 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
 	}
 	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == htons(50000 /* remote shutdown */)) {
-		printf("close requested via network\n"); fflush(stdout);
+		time_t t = time(NULL);
+		struct tm lt;
+		localtime_r(&t, &lt);
+		printf("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
+				lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+				lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 		__app_close_posted = 1;
 		signal(SIGINT, SIG_DFL);
 	}
