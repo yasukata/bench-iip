@@ -657,6 +657,30 @@ ulimit -n unlimited; cnt=0; while [ $cnt -le 31 ]; do ./app -p 10000 -c 0-$cnt -
 
 <img src="https://raw.githubusercontent.com/yasukata/img/master/iip/multicore/throughput.svg" width="500px">
 
+### 32-core server latency
+
+- client (iip and DPDK)
+
+```
+cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 5 -c $(($cnt == 0 ? 1 : $cnt)) -d 1 -l 1 2>&1 | tee -a ./result.txt; cnt=$(($cnt+2)); don
+```
+
+- server (iip and DPDK)
+
+```
+cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1; cnt=$(($cnt+2)); done
+```
+
+- server (Linux)
+
+```
+ulimit -n unlimited; cnt=0; while [ $cnt -le 32 ]; do ./app -p 10000 -c 0-31 -g 1 -l 1; cnt=$(($cnt+2)); done
+```
+
+- results:
+
+<img src="https://raw.githubusercontent.com/yasukata/img/master/iip/multicore/latency.svg" width="500px">
+
 ### bulk transfer
 
 - receiver
