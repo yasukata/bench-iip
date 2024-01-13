@@ -462,24 +462,23 @@ static void *__app_thread_init(void *workspace, void *opaque)
 
 static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
 {
-	struct iip_arp_hdr *arph = (struct iip_arp_hdr *)((uintptr_t) iip_ops_pkt_get_data(m, opaque) + 14);
 	D("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-			arph->ip_sender[0],
-			arph->ip_sender[1],
-			arph->ip_sender[2],
-			arph->ip_sender[3],
-			arph->mac_sender[0],
-			arph->mac_sender[1],
-			arph->mac_sender[2],
-			arph->mac_sender[3],
-			arph->mac_sender[4],
-			arph->mac_sender[5]
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[0],
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[1],
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[2],
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[3],
+			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[0],
+			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[1],
+			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[2],
+			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[3],
+			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[4],
+			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[5]
 	      );
-	if (arph->ip_sender[0] == (uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff) &&
-			arph->ip_sender[1] == (uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff) &&
-			arph->ip_sender[2] == (uint8_t)((__app_remote_ip4_addr_be >> 16) & 0xff) &&
-			arph->ip_sender[3] == (uint8_t)((__app_remote_ip4_addr_be >> 24) & 0xff))
-		memcpy(__app_remote_mac, arph->mac_sender, 6);
+	if (PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[0] == (uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff) &&
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[1] == (uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff) &&
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[2] == (uint8_t)((__app_remote_ip4_addr_be >> 16) & 0xff) &&
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[3] == (uint8_t)((__app_remote_ip4_addr_be >> 24) & 0xff))
+		memcpy(__app_remote_mac, PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque)), 6);
 }
 
 static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __attribute__((unused)), void *opaque __attribute__((unused)))
@@ -658,10 +657,10 @@ static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void
 			void *_m;
 			assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
 			assert(!iip_udp_send(td->workspace,
-						PB_ETH(iip_ops_pkt_get_data(m, opaque))->dst,
+						iip_ops_l2_hdr_dst_ptr(m, opaque),
 						PB_IP4(iip_ops_pkt_get_data(m, opaque))->dst_be,
 						PB_UDP(iip_ops_pkt_get_data(m, opaque))->dst_be,
-						PB_ETH(iip_ops_pkt_get_data(m, opaque))->src,
+						iip_ops_l2_hdr_src_ptr(m, opaque),
 						PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be,
 						PB_UDP(iip_ops_pkt_get_data(m, opaque))->src_be,
 						_m, opaque));
