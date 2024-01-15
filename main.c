@@ -36,6 +36,16 @@
 #define __iip_memmove	memmove
 #define __iip_assert	assert
 
+static uint8_t verbose_level = 0;
+
+#define IIP_OPS_DEBUG_PRINTF(fmt, ...) \
+	do { \
+		if (verbose_level) { \
+			printf("\x1b[32m(%u)[%s:%u]: " fmt "\x1b[39m", iip_ops_util_core(), __func__, __LINE__, ##__VA_ARGS__); \
+			fflush(stdout); \
+		} \
+	} while (0)
+
 #include "iip/main.c"
 
 static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t, uint32_t, uint16_t, void *);
@@ -204,7 +214,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				else if (!iip_ops_util_core()) {
 					uint64_t now = NOW();
 					if (1000000000UL < (now - td->prev_arp)) {
-						D("sending arp request ...");
+						IIP_OPS_DEBUG_PRINTF("sending arp request ...\n");
 						iip_arp_request(td->workspace, mac, ip4_be, __app_remote_ip4_addr_be, opaque);
 						td->prev_arp = now;
 					}
@@ -223,7 +233,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								switch (__app_proto_id) {
 								case 6:
 									{
-										D("%u: try connect to %hhu.%hhu.%hhu.%hhu:%u (local %u)",
+										IIP_OPS_DEBUG_PRINTF("%u: try connect to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
 												iip_ops_util_core(),
 												(uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff),
 												(uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff),
@@ -240,7 +250,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 									{
 										void *m;
 										assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);;
-										D("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)",
+										IIP_OPS_DEBUG_PRINTF("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
 												iip_ops_util_core(),
 												(uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff),
 												(uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff),
@@ -462,7 +472,7 @@ static void *__app_thread_init(void *workspace, void *opaque)
 
 static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
 {
-	D("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+	IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
 			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[0],
 			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[1],
 			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[2],
@@ -483,7 +493,7 @@ static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void 
 
 static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __attribute__((unused)), void *opaque __attribute__((unused)))
 {
-	D("received icmp reply");
+	IIP_OPS_DEBUG_PRINTF("received icmp reply\n");
 }
 
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
@@ -502,7 +512,7 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
 	to->handle = handle;
-	D("[%u] accept new connection (%lu)", iip_ops_util_core(), ++__app_active_conn);
+	IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
 	{
 		void **opaque_array = (void *) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
@@ -526,7 +536,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 	void **opaque_array = (void *) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
-		D("[%u] connected (%lu)", iip_ops_util_core(), ++__app_active_conn);
+		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
 		if (!__app_start_time)
 			__app_start_time = NOW();
 		{
@@ -644,7 +654,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 	}
 	{
 		uint64_t conn_cnt = --__app_active_conn;
-		D("tcp connection closed (%lu)", conn_cnt);
+		IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", conn_cnt);
 	}
 }
 
@@ -729,7 +739,7 @@ static void __app_init(int argc, char *const *argv)
 				__app_duration = strtol(optarg, NULL, 10);
 				break;
 			case 'v':
-				iip_verbose_level = atoi(optarg);
+				verbose_level = atoi(optarg);
 				break;
 			default:
 				assert(0);
