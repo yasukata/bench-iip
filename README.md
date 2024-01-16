@@ -731,3 +731,74 @@ get average of 32 cores
 ```
 numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" -v numcore=$numcore 'BEGIN{ pcnt = 0; ipc = 0; missk = 0; util = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 + (32 - numcore) < pcnt) { ipc += $2; missk += $3; util += $4; }; pcnt += 1; }; } END{ print ipc / numcore ", " missk /numcore ", " util / numcore }'; numcore=$(($numcore+1)); done
 ```
+
+# appendix
+
+## AF_XDP-based backend
+
+This bench-iip program should work with an [AF_XDP-based backend](https://github.com/yasukata/iip-af_xdp).
+
+### build with the AF_XDP-based backend
+
+Please first download the files of [bench-iip](https://github.com/yasukata/bench-iip) and [iip](https://github.com/yasukata/iip) by the following commands; these are the same as the ones described in the [build section](#build), therefore, if you already have them, you do not need to execute these commands.
+
+```
+git clone https://github.com/yasukata/bench-iip.git
+```
+
+```
+cd bench-iip
+```
+
+```
+git clone https://github.com/yasukata/iip.git
+```
+
+From here, the procedure is specific for the AF_XDP-based backend and not described in the [build section](#build).
+
+Please download the code of the [AF_XDP-based backend](https://github.com/yasukata/iip-af_xdp) by the following command; please note that this we assume we are in the directory ```bench-iip``` by the command ```cd bench-iip``` above.
+
+```
+git clone https://github.com/yasukata/iip-af_xdp.git
+```
+
+If you already have a compiled binary for the DPDK-based backend, please clean the directory by the following command.
+
+```
+IOSUB_DIR=./iip-dpdk make clean
+```
+
+Then, the following command will generate the bench-iip application named by ```a.out``` whose packet I/O is performed by AF_XDP.
+
+```
+IOSUB_DIR=./iip-af_xdp make
+```
+
+### run the benchmark with the AF_XDP-based backend
+
+Please turn on a network interface to be used for the AF_XDP-based backend and assign an IP address to it; the following example command turns on a physical NIC named ```enp23s0f0np0``` and assigns ```10.100.0.20/24``` to it.
+
+```
+sudo ifconfig enp23s0f0np0 10.100.0.20 netmask 255.255.255.0 up
+```
+
+To run the program with the behavior equivalent to the one shown in the [run section](#run), please type the following command.
+
+```
+sudo ethtool -L enp23s0f0np0 combined 1; sudo ./a.out -l 0 -i enp23s0f0np0 -- -p 10000 -m "```echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nAA'```"
+```
+
+The launched program will use ```10.100.0.20/24``` as its IP address and listen on TCP port 10000 for serving the specified HTTP message, and supposedly, you will see the same behavior if you try the ```ping``` and ```telnet``` tests shown in the [run section](#run) from another machine reachable to the ```enp23s0f0np0``` interface.
+
+### command options for the AF_XDP-based backend
+
+The arguments for ```a.out``` are divided into two sections by ```--``` and the first part is passed to the AF_XDP-based backend and the second part is processed by the bench-iip program.
+
+The first part of the arguments are:
+- ```-l```: specification for CPU cores to be used, and its syntax is the same as the ```-l``` option for the DPDK-based backend
+- ```-i```: specification for a network interface to be used
+
+The second part of the arguments are the same as the one shown in the [previous section](#3rd-section-for-the-benchmark-tool).
+
+One important point in the command above is to use ```ethtool``` to configure the number of NIC queues to be the same as the number of CPU cores used by the bench-iip program that is specified through the ```-l``` option; this is necessary because this benchmark program uses one CPU core to monitor one NIC queue. Therefore, if you use, for example, two CPU cores by specifying ```-l 0-1```, please ```sudo ethtool -L enp23s0f0np0 combined 2``` beforehand.
+
