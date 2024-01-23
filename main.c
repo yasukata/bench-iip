@@ -28,7 +28,11 @@
 
 #include <arpa/inet.h>
 
+#ifdef __linux__
 #include <numa.h>
+#define mem_alloc_local	numa_alloc_local
+#define mem_free	numa_free
+#endif
 
 #define __iip_memcpy	memcpy
 #define __iip_memset	memset
@@ -50,12 +54,12 @@ static uint8_t verbose_level = 0;
 
 static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t, uint32_t, uint16_t, void *);
 
-#define NOW() \
-	({ \
-		struct timespec __ts; \
-		assert(!clock_gettime(CLOCK_REALTIME, &__ts)); \
-		(__ts.tv_sec * 1000000000UL + __ts.tv_nsec); \
-	}) \
+static uint64_t NOW(void)
+{
+	struct timespec __ts;
+	assert(!clock_gettime(CLOCK_REALTIME, &__ts));
+	return (__ts.tv_sec * 1000000000UL + __ts.tv_nsec);
+}
 
 #define MAX_THREAD (256)
 #define MAX_PAYLOAD_LEN (63488)
@@ -214,7 +218,11 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				else if (!iip_ops_util_core()) {
 					uint64_t now = NOW();
 					if (1000000000UL < (now - td->prev_arp)) {
-						IIP_OPS_DEBUG_PRINTF("sending arp request ...\n");
+						IIP_OPS_DEBUG_PRINTF("sending arp request ... to %u.%u.%u.%u\n",
+								(__app_remote_ip4_addr_be >>  0) & 0xff,
+								(__app_remote_ip4_addr_be >>  8) & 0xff,
+								(__app_remote_ip4_addr_be >> 16) & 0xff,
+								(__app_remote_ip4_addr_be >> 24) & 0xff);
 						iip_arp_request(td->workspace, mac, ip4_be, __app_remote_ip4_addr_be, opaque);
 						td->prev_arp = now;
 					}
@@ -409,13 +417,13 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 					}
 					if (__app_remote_ip4_addr_be && !iip_ops_util_core()) {
-						assert((__app_latency_val = numa_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
+						assert((__app_latency_val = mem_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
 						{
 							uint16_t i;
 							for (i = 0; i < MAX_THREAD; i++) {
 								if (__app_td[i]) {
 									uint64_t cnt = __app_td[i]->monitor.latency.cnt;
-									asm volatile ("" ::: "memory");
+									__asm__ volatile ("" ::: "memory");
 									if (NUM_MONITOR_LATENCY_RECORD < cnt)
 										cnt = NUM_MONITOR_LATENCY_RECORD;
 									memcpy(&__app_latency_val[__app_latency_cnt],
@@ -448,7 +456,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 static void *__app_thread_init(void *workspace, void *opaque)
 {
 	struct thread_data *td;
-	assert((td = numa_alloc_local(sizeof(struct thread_data))) != NULL);
+	assert((td = mem_alloc_local(sizeof(struct thread_data))) != NULL);
 	memset(td, 0, sizeof(struct thread_data));
 	td->workspace = workspace;
 	if (__app_payload_len) {
@@ -493,7 +501,11 @@ static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void 
 
 static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __attribute__((unused)), void *opaque __attribute__((unused)))
 {
-	IIP_OPS_DEBUG_PRINTF("received icmp reply\n");
+	IIP_OPS_DEBUG_PRINTF("received icmp reply from %u.%u.%u.%u\n",
+			(PB_IP4(iip_ops_pkt_get_data(m, opaque))->dst_be >>  0) & 0xff,
+			(PB_IP4(iip_ops_pkt_get_data(m, opaque))->dst_be >>  8) & 0xff,
+			(PB_IP4(iip_ops_pkt_get_data(m, opaque))->dst_be >> 16) & 0xff,
+			(PB_IP4(iip_ops_pkt_get_data(m, opaque))->dst_be >> 24) & 0xff);
 }
 
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
@@ -508,7 +520,7 @@ static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, vo
 
 static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m, void *opaque)
 {
-	struct tcp_opaque *to = (struct tcp_opaque *) numa_alloc_local(sizeof(struct tcp_opaque));
+	struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque));
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
 	to->handle = handle;
@@ -540,7 +552,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 		if (!__app_start_time)
 			__app_start_time = NOW();
 		{
-			struct tcp_opaque *to = numa_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
+			struct tcp_opaque *to = mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
 			memset(to, 0, sizeof(struct tcp_opaque));
 			to->handle = handle;
@@ -570,7 +582,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		{
 			uint8_t idx = td->monitor.idx;
-			asm volatile ("" ::: "memory");
+			__asm__ volatile ("" ::: "memory");
 			td->monitor.counter[idx].rx_bytes += PB_TCP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
 			td->monitor.counter[idx].rx_pkt++;
 		}
@@ -644,7 +656,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 			for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 				if (tcp_opaque == td->tcp.conn_list[i]) {
 					td->tcp.conn_list[i] = td->tcp.conn_list[--td->tcp.conn_list_cnt];
-					numa_free(tcp_opaque, sizeof(struct tcp_opaque));
+					mem_free(tcp_opaque, sizeof(struct tcp_opaque));
 					break;
 				}
 			}
@@ -839,7 +851,7 @@ int main(int argc, char *const *argv)
 		}
 		if (1000 <= __app_latency_cnt)
 			l_999th = __app_latency_val[(__app_latency_cnt / 1000) * 999];
-		numa_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
 		{
 			char b50th[256], *p50th = b50th, b90th[256], *p90th = b90th, b99th[256], *p99th = b99th, b999th[256], *p999th = b999th;
 			if (l_50th)
@@ -866,7 +878,7 @@ int main(int argc, char *const *argv)
 					p50th, p90th, p99th, p999th
 			      ); fflush(stdout);
 		}
-		numa_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
 	}
 	return ret;
 }
