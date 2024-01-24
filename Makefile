@@ -5,7 +5,12 @@ CFLAGS += -rdynamic
 CFLAGS += -Werror -Wextra -Wall
 CFLAGS += -DIOSUB_MAIN_C=$(IOSUB_DIR)/main.c
 
+OSNAME = $(shell uname -s)
+
+ifeq ($(OSNAME),Linux)
 LDFLAGS += -lnuma
+else ifeq ($(OSNAME),FreeBSD)
+endif
 
 C_OBJS = main.o
 
