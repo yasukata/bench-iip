@@ -802,3 +802,407 @@ The second part of the arguments are the same as the one shown in the [previous 
 
 One important point in the command above is to use ```ethtool``` to configure the number of NIC queues to be the same as the number of CPU cores used by the bench-iip program that is specified through the ```-l``` option; this is necessary because this benchmark program uses one CPU core to monitor one NIC queue. Therefore, if you use, for example, two CPU cores by specifying ```-l 0-1```, please ```sudo ethtool -L enp23s0f0np0 combined 2``` beforehand.
 
+## compilation test
+
+The following commands are to see the dependencies introduced by ```main.c``` in this repository.
+
+```
+mkdir ./iip-iostub
+```
+
+The content of ```iip-iostub/main.c```.
+
+```c
+static uint16_t helper_ip4_get_connection_affinity(uint16_t protocol, uint32_t local_ip4_be, uint16_t local_port_be, uint32_t peer_ip4_be, uint16_t peer_port_be, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) protocol;
+		(void) local_ip4_be;
+		(void) local_port_be;
+		(void) peer_ip4_be;
+		(void) peer_port_be;
+		(void) opaque;
+	}
+}
+
+static uint16_t iip_ops_l2_hdr_len(void *pkt, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static uint8_t *iip_ops_l2_hdr_src_ptr(void *pkt, void *opaque)
+{
+	return NULL;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static uint8_t *iip_ops_l2_hdr_dst_ptr(void *pkt, void *opaque)
+{
+	return NULL;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_l2_skip(void *pkt, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static uint16_t iip_ops_l2_ethertype_be(void *pkt, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static uint16_t iip_ops_l2_addr_len(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void iip_ops_l2_broadcast_addr(uint8_t bc_mac[], void *opaque)
+{
+	{ /* unused */
+		(void) bc_mac;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_l2_hdr_craft(void *pkt, uint8_t src[], uint8_t dst[], uint16_t ethertype_be, void *opaque)
+{
+	{ /* unused */
+		(void) pkt;
+		(void) src;
+		(void) dst;
+		(void) ethertype_be;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_arp_lhw(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_arp_lproto(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void *iip_ops_pkt_alloc(void *opaque)
+{
+	return NULL;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void iip_ops_pkt_free(void *pkt, void *opaque)
+{
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static void *iip_ops_pkt_get_data(void *pkt, void *opaque)
+{
+	return NULL;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static uint16_t iip_ops_pkt_get_len(void *pkt, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_pkt_set_len(void *pkt, uint16_t len, void *opaque)
+{
+	{ /* unused */
+		(void) pkt;
+		(void) len;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_pkt_increment_head(void *pkt, uint16_t len, void *opaque)
+{
+	{ /* unused */
+		(void) pkt;
+		(void) len;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_pkt_decrement_tail(void *pkt, uint16_t len, void *opaque)
+{
+	{ /* unused */
+		(void) pkt;
+		(void) len;
+		(void) opaque;
+	}
+}
+
+static void *iip_ops_pkt_clone(void *pkt, void *opaque)
+{
+	return NULL;
+	{ /* unused */
+		(void) pkt;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_pkt_scatter_gather_chain_append(void *pkt_head, void *pkt_tail, void *opaque)
+{
+	{ /* unused */
+		(void) pkt_head;
+		(void) pkt_tail;
+		(void) opaque;
+	}
+}
+
+static void *iip_ops_pkt_scatter_gather_chain_get_next(void *pkt_head, void *opaque)
+{
+	return NULL;
+	{ /* unused */
+		(void) pkt_head;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_l2_flush(void *opaque)
+{
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void iip_ops_l2_push(void *_m, void *opaque)
+{
+	{ /* unused */
+		(void) _m;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_tx_scatter_gather(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_ip4_rx_checksum(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_ip4_tx_checksum(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_offload_ip4_rx_checksum(void *m, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_offload_tcp_rx_checksum(void *m, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_offload_udp_rx_checksum(void *m, void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_nic_offload_ip4_tx_checksum_mark(void *m, void *opaque)
+{
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_tcp_rx_checksum(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_tcp_tx_checksum(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_tcp_tx_tso(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void iip_ops_nic_offload_tcp_tx_checksum_mark(void *m, void *opaque)
+{
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_nic_offload_tcp_tx_tso_mark(void *m, void *opaque)
+{
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_udp_rx_checksum(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_udp_tx_checksum(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint8_t iip_ops_nic_feature_offload_udp_tx_tso(void *opaque)
+{
+	return 0;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void iip_ops_nic_offload_udp_tx_checksum_mark(void *m, void *opaque)
+{
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static void iip_ops_nic_offload_udp_tx_tso_mark(void *m, void *opaque)
+{
+	{ /* unused */
+		(void) m;
+		(void) opaque;
+	}
+}
+
+static int __iosub_main(int argc, char *const *argv)
+{
+	return 0;
+	{ /* unused */
+		(void) argc;
+		(void) argv;
+	}
+	{ /* unused */
+		(void) __app_init;
+		(void) __app_thread_init;
+		(void) __app_loop;
+		(void) __app_should_stop;
+	}
+	{ /* unused */
+		(void) iip_run;
+		(void) iip_udp_send;
+		(void) iip_tcp_connect;
+		(void) iip_tcp_rxbuf_consumed;
+		(void) iip_tcp_close;
+		(void) iip_tcp_send;
+		(void) iip_arp_request;
+		(void) iip_add_tcp_conn;
+		(void) iip_add_pb;
+		(void) iip_tcp_conn_size;
+		(void) iip_pb_size;
+		(void) iip_workspace_size;
+	}
+}
+```
+
+The content of ```iip-iostub/build.mk```.
+
+```Makefile
+CFLAGS += -pedantic
+
+OSNAME = $(shell uname -s)
+ifeq ($(OSNAME),Linux)
+CFLAGS += -D_POSIX_C_SOURCE=200112L -std=c17
+else ifeq ($(OSNAME),FreeBSD)
+CFLAGS += -std=c89
+endif
+```
+
+Supposedly, we will have ```a.out``` by the following command.
+
+```
+IOSUB_DIR=./iip-iostub make
+```
+
+Note that ```a.out``` generated with ```IOSUB_DIR=./iip-iostub``` is does not work; it is just for the compilation test.
