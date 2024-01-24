@@ -924,7 +924,6 @@ int main(int argc, char *const *argv)
 					p50th, p90th, p99th, p999th
 			      ); fflush(stdout);
 		}
-		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
 	}
 	{
 		assert(!pthread_spin_destroy(&global_lock));
