@@ -1,6 +1,7 @@
 PROGS = a.out
 
-CFLAGS += -O3 -pipe -g -rdynamic
+CFLAGS += -O3 -pipe -g
+CFLAGS += -rdynamic
 CFLAGS += -Werror -Wextra -Wall
 CFLAGS += -DIOSUB_MAIN_C=$(IOSUB_DIR)/main.c
 
