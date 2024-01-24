@@ -57,6 +57,18 @@ static void __debug_printf(const char *format, ...)
 
 #include "iip/main.c"
 
+static void iip_ops_util_now_ns(uint32_t t[3], void *opaque)
+{
+	struct timespec ts;
+	assert(!clock_gettime(CLOCK_REALTIME, &ts));
+	t[0] = (ts.tv_sec >> 32) & 0xffffffff;
+	t[1] = (ts.tv_sec >>  0) & 0xffffffff;
+	t[2] = ts.tv_nsec;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
 static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t, uint32_t, uint16_t, void *);
 
 static uint64_t NOW(void)
