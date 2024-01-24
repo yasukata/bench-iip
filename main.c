@@ -29,6 +29,8 @@
 
 #include <arpa/inet.h>
 
+#include <pthread.h>
+
 #ifdef __linux__
 #include <numa.h>
 #define mem_alloc_local	numa_alloc_local
@@ -129,7 +131,8 @@ struct tcp_opaque {
 static uint8_t __app_close_posted = 0;
 static uint8_t __app_remote_stop_handled = 0;
 
-static _Atomic uint64_t __app_active_conn = 0;
+static pthread_spinlock_t global_lock;
+static uint64_t __app_active_conn = 0;
 static uint16_t __app_tcp_port_affinty_map[0xffff];
 static uint64_t __app_dbg_prev_print = 0;
 static struct thread_data *__app_td[MAX_THREAD] = { 0 };
@@ -201,19 +204,21 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				if (!td->core_id) {
 					{ /* get port affinity map */
 						printf("getting affinity map for %u ports ...", MAX_PORT_CNT); fflush(stdout);
-						uint16_t i;
-						for (i = 0; i < MAX_PORT_CNT; i++) {
-							uint16_t port = helper_ip4_get_connection_affinity(6 /* tcp */,
-											ip4_be, htons(i),
-											__app_remote_ip4_addr_be, __app_l4_port_be,
-											opaque);
-							if (port != UINT16_MAX)
-								__app_tcp_port_affinty_map[i] = port;
-							else {
-								assert(!i);
-								printf("RSS not supported\n"); fflush(stdout);
-								__app_tcp_port_affinty_map[i] = 0;
-								break;
+						{
+							uint16_t i;
+							for (i = 0; i < MAX_PORT_CNT; i++) {
+								uint16_t port = helper_ip4_get_connection_affinity(6 /* tcp */,
+										ip4_be, htons(i),
+										__app_remote_ip4_addr_be, __app_l4_port_be,
+										opaque);
+								if (port != UINT16_MAX)
+									__app_tcp_port_affinty_map[i] = port;
+								else {
+									assert(!i);
+									printf("RSS not supported\n"); fflush(stdout);
+									__app_tcp_port_affinty_map[i] = 0;
+									break;
+								}
 							}
 						}
 						printf("ok\n"); fflush(stdout);
@@ -540,7 +545,13 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
 	to->handle = handle;
-	IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
+	pthread_spin_lock(&global_lock);
+	{
+		void **opaque_array = (void *) opaque;
+		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++__app_active_conn);
+	}
+	pthread_spin_unlock(&global_lock);
 	{
 		void **opaque_array = (void *) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
@@ -564,7 +575,9 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 	void **opaque_array = (void *) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
-		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", iip_ops_util_core(), ++__app_active_conn);
+		pthread_spin_lock(&global_lock);
+		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++__app_active_conn);
+		pthread_spin_unlock(&global_lock);
 		if (!__app_start_time)
 			__app_start_time = NOW();
 		{
@@ -680,10 +693,9 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 		if (td->close_state == 1 && !td->tcp.conn_list_cnt)
 			td->should_stop = 1;
 	}
-	{
-		uint64_t conn_cnt = --__app_active_conn;
-		IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", conn_cnt);
-	}
+	pthread_spin_lock(&global_lock);
+	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --__app_active_conn);
+	pthread_spin_unlock(&global_lock);
 }
 
 static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
@@ -854,7 +866,11 @@ static int qsort_uint64_cmp(const void *a, const void *b)
 
 int main(int argc, char *const *argv)
 {
-	int ret = __iosub_main(argc, argv);
+	int ret = 0;
+	{
+		assert(!pthread_spin_init(&global_lock, PTHREAD_PROCESS_PRIVATE /* thread only */));
+	}
+	ret = __iosub_main(argc, argv);
 	if (__app_latency_val) {
 		static uint64_t l_50th, l_90th, l_99th, l_999th;
 		printf("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
@@ -895,6 +911,9 @@ int main(int argc, char *const *argv)
 			      ); fflush(stdout);
 		}
 		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+	}
+	{
+		assert(!pthread_spin_destroy(&global_lock));
 	}
 	return ret;
 }
