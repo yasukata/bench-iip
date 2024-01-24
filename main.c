@@ -31,10 +31,24 @@
 
 #include <pthread.h>
 
-#ifdef __linux__
+#if defined(__linux__)
 #include <numa.h>
 #define mem_alloc_local	numa_alloc_local
 #define mem_free	numa_free
+#elif defined(__FreeBSD__)
+#include <sys/socket.h> /* AF_INET */
+static void *mem_alloc_local(size_t len)
+{
+	return malloc(len);
+}
+
+static void mem_free(void *ptr, size_t len)
+{
+	free(ptr);
+	{
+		(void) len;
+	}
+}
 #endif
 
 #define __iip_memcpy	memcpy
