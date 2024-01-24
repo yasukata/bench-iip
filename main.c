@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
@@ -42,13 +43,17 @@
 
 static uint8_t verbose_level = 0;
 
-#define IIP_OPS_DEBUG_PRINTF(fmt, ...) \
-	do { \
-		if (verbose_level) { \
-			printf("\x1b[32m(%u)[%s:%u]: " fmt "\x1b[39m", iip_ops_util_core(), __func__, __LINE__, ##__VA_ARGS__); \
-			fflush(stdout); \
-		} \
-	} while (0)
+static void __debug_printf(const char *format, ...)
+{
+	if (verbose_level) {
+		va_list v;
+		va_start(v, format);
+		vprintf(format, v);
+		va_end(v);
+		fflush(stdout);
+	}
+}
+#define IIP_OPS_DEBUG_PRINTF __debug_printf
 
 #include "iip/main.c"
 
