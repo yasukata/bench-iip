@@ -802,6 +802,127 @@ The second part of the arguments are the same as the one shown in the [previous 
 
 One important point in the command above is to use ```ethtool``` to configure the number of NIC queues to be the same as the number of CPU cores used by the bench-iip program that is specified through the ```-l``` option; this is necessary because this benchmark program uses one CPU core to monitor one NIC queue. Therefore, if you use, for example, two CPU cores by specifying ```-l 0-1```, please ```sudo ethtool -L enp23s0f0np0 combined 2``` beforehand.
 
+## netmap-based backend
+
+### download source code necessary for the netmap-based backend
+
+Please first download the files of [bench-iip](https://github.com/yasukata/bench-iip) and [iip](https://github.com/yasukata/iip) by the following commands; these are the same as the ones described in the [build section](#build), therefore, if you already have them, you do not need to execute these commands.
+
+```
+git clone https://github.com/yasukata/bench-iip.git
+```
+
+```
+cd bench-iip
+```
+
+```
+git clone https://github.com/yasukata/iip.git
+```
+
+From here, the procedure is specific for the netmap-based backend and not described in the [build section](#build).
+
+Please download the code of the [netmap-based backend](https://github.com/yasukata/iip-netmap) by the following command; please note that this we assume we are in the directory ```bench-iip``` by the command ```cd bench-iip``` above.
+
+```
+git clone https://github.com/yasukata/iip-netmap.git
+```
+
+### netmap preparation necessary on Linux
+
+This part is specific to Linux environments; to use netmap on Linux, we need to build its source code and install it and this step is not necessary on FreeBSD.
+
+Please enter the iip-netmap directory.
+
+```
+cd iip-netmap
+```
+
+Please download the netmap source code by the following command.
+
+```
+git clone https://github.com/luigirizzo/netmap.git
+```
+
+Then, please enter the downloaded netmap directory.
+
+```
+cd netmap
+```
+
+To build netmap on Linux, we should have Linux kernel headers; you could install them using the following commands.
+
+```
+sudo apt install linux-headers-`uname -r`
+```
+
+Please type the following command to execute ```configure``` of netmap. Please note that here we specify ```--drivers=``` to skip building NIC device drivers having netmap-specific patches; if you plan to use physical NICs, you need to specify the names of drivers for the physical NICs shown in ```driver_avail``` of ```netmap/LINUX/configure``` for ```--drivers=``` or if you remove the ``````--drivers``` option, the netmap build tool will try to build all possible NIC drivers.
+
+```
+./configure --drivers=
+```
+
+Afterward, pleae type ```make``` to generate a kernel module named ```netmap.ko```.
+
+```
+make
+```
+
+Then, the following command will install the netmap kernel module.
+
+```
+sudo insmod netmap.ko
+```
+
+Please get back to ```bench-iip``` directory.
+
+```
+cd ../../
+```
+
+**WARNING**: If you plan to use netmap with physical NICs, you need to replace the currently loaded device drivers for the physical NICs with the ones having netmap-specific changes. This part is a little bit complicated and, in the worst case, you may lose network reachability to the machine where you try to install netmap because of the NIC device driver module deletion. For details, please refer to the instruction provided from the official netmap repository at https://github.com/luigirizzo/netmap/blob/master/LINUX/README.md#how-to-load-netmap-in-your-system , and please try it **at your own risk**.
+
+### build with the netmap-based backend
+
+If you already have a compiled binary for the DPDK-based backend, please clean the directory by the following command.
+
+```
+IOSUB_DIR=./iip-dpdk make clean
+```
+
+Then, the following command will generate the bench-iip application named by ```a.out``` whose packet I/O is performed by netmap.
+
+```
+IOSUB_DIR=./iip-netmap make
+```
+
+### run the benchmark with the netmap-based backend
+
+The example here uses netmap-specific virtual ports rather than physical NICs for simplicity.
+
+The following command runs, on CPU core 0, a server program which has a virtual port named ```if20``` which is associated with a virtual switch named ```vale0```, and the virtual port's MAC address is aa:bb:cc:dd:ee:ff and IP address is 10.100.0.20 respectively and it listens on TCP port 10000 and serves an HTTP content.
+
+```
+sudo ./a.out -a aa:bb:cc:dd:ee:ff,10.100.0.20 -l 0 -i vale0:if20 -- -p 10000 -m "```echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nAA'```"
+```
+
+Please open another terminal/console on the same machine executed the command above, and please type the following command; it runs, on CPU core 1, a client program which has a virtual port named ```if10``` which is associated with a virtual switch named ```vale0```, and the virtual port's MAC address is 11:22:33:44:55:66 and IP address is 10.100.0.10 respectively and it triest to connect to TCP port 10000 of 10.100.0.20 and sends ```GET ``` to fetch the HTTP data through 1 TCP connection.
+
+```
+sudo ./a.out -a 11:22:33:44:55:66,10.100.0.10 -l 1 -i vale0:if10 -- -s 10.100.0.20 -p 10000 -m "GET " -c 1
+```
+
+### command options for the netmap-based backend
+
+The arguments for ```a.out``` are divided into two sections by ```--``` and the first part is passed to the netmap-based backend and the second part is processed by the bench-iip program.
+
+The first part of the arguments are:
+- ```-a```: specification for MAC and IP addresses (for example, ```-a aa:bb:cc:dd:ee:ff,10.100.0.20``` specifies aa:bb:cc:dd:ee:ff for the MAC address and 10.100.0.20 for the IP address)
+- ```-l```: specification for CPU cores to be used, and its syntax is the same as the ```-l``` option for the DPDK-based backend
+- ```-i```: specification for a network interface to be used
+
+The second part of the arguments are the same as the one shown in the [previous section](#3rd-section-for-the-benchmark-tool).
+
 ## compilation test
 
 The following commands are to see the dependencies introduced by ```main.c``` in this repository.
