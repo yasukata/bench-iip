@@ -125,6 +125,7 @@ In the example above,
 ### 2nd section: for the application-specific DPDK setting
 
 - ```-a```: specify the IP address for a DPDK port; the format is PORT_NUM,IP_ADDR (e.g., 0,10.100.0.10 configures 10.100.0.10 for port0)
+- ```-e```: specify the max timeout value (in millisecond) passed to epoll_wait; when 0 is specified, the interrupt-based mode is not activated and epoll_wait will not be called (default value is 0)
 
 ### 3rd section: for the benchmark tool
 
