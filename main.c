@@ -827,7 +827,7 @@ static void __app_exit(void *app_global_opaque)
 
 static void *__app_init(int argc, char *const *argv)
 {
-	struct app_data *ad = mem_alloc_local(sizeof(struct app_data));
+	struct app_data *ad = (struct app_data *) mem_alloc_local(sizeof(struct app_data));
 	assert(ad);
 
 	ad->concurrency = 1;
