@@ -29,6 +29,10 @@
 
 #include <arpa/inet.h>
 
+#ifdef __cplusplus
+#include <atomic>
+#endif
+
 #if defined(__linux__)
 #include <numa.h>
 #define mem_alloc_local	numa_alloc_local
@@ -152,7 +156,11 @@ static uint8_t __app_close_posted = 0;
 static uint8_t __app_remote_stop_handled = 0;
 
 struct app_data {
+#ifdef __cplusplus
+	std::atomic<uint64_t> active_conn;
+#else
 	_Atomic uint64_t active_conn;
+#endif
 	uint16_t tcp_port_affinty_map[0xffff];
 	uint64_t dbg_prev_print;
 	struct thread_data *tds[MAX_THREAD];
