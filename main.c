@@ -742,6 +742,51 @@ static void sig_h(int sig __attribute__((unused)))
 	signal(SIGINT, SIG_DFL);
 }
 
+static void __app_exit(void *app_global_opaque)
+{
+	(void) app_global_opaque;
+	if (__app_latency_val) {
+		static uint64_t l_50th, l_90th, l_99th, l_999th;
+		__APP_PRINTF("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
+		qsort(__app_latency_val, __app_latency_cnt, sizeof(__app_td[0]->monitor.latency.val[0]), qsort_uint64_cmp);
+		if (2 < __app_latency_cnt)
+			l_50th = __app_latency_val[__app_latency_cnt / 2];
+		if (100 <= __app_latency_cnt) {
+			l_90th = __app_latency_val[(__app_latency_cnt / 10) * 9];
+			l_99th = __app_latency_val[(__app_latency_cnt / 100) * 99];
+		}
+		if (1000 <= __app_latency_cnt)
+			l_999th = __app_latency_val[(__app_latency_cnt / 1000) * 999];
+		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+		{
+			char b50th[256], *p50th = b50th, b90th[256], *p90th = b90th, b99th[256], *p99th = b99th, b999th[256], *p999th = b999th;
+			if (l_50th)
+				snprintf(b50th, sizeof(b50th), "50%%-ile %lu ns", l_50th);
+			else
+				snprintf(b50th, sizeof(b50th), "50%%-ile -");
+			if (l_90th)
+				snprintf(b90th, sizeof(b90th), "90%%-ile %lu ns", l_90th);
+			else
+				snprintf(b90th, sizeof(b90th), "90%%-ile -");
+			if (l_99th)
+				snprintf(b99th, sizeof(b99th), "99%%-ile %lu ns", l_99th);
+			else
+				snprintf(b99th, sizeof(b99th), "99%%-ile -");
+			if (l_999th)
+				snprintf(b999th, sizeof(b999th), "99.9%%-ile %lu ns", l_999th);
+			else
+				snprintf(b999th, sizeof(b999th), "99.9%%-ile -");
+			__APP_PRINTF("throughput rx %lu bps %lu pps, tx %lu bps %lu pps, latency %s %s %s %s\n",
+					__rx_bytes_prev[0] * 8,
+					__rx_pps_prev[0],
+					__tx_bytes_prev[0] * 8,
+					__tx_pps_prev[0],
+					p50th, p90th, p99th, p999th
+				    ); fflush(stdout);
+		}
+	}
+}
+
 static void *__app_init(int argc, char *const *argv)
 {
 	{ /* parse arguments */
@@ -883,45 +928,5 @@ int main(int argc, char *const *argv)
 {
 	int ret = 0;
 	ret = __iosub_main(argc, argv);
-	if (__app_latency_val) {
-		static uint64_t l_50th, l_90th, l_99th, l_999th;
-		__APP_PRINTF("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
-		qsort(__app_latency_val, __app_latency_cnt, sizeof(__app_td[0]->monitor.latency.val[0]), qsort_uint64_cmp);
-		if (2 < __app_latency_cnt)
-			l_50th = __app_latency_val[__app_latency_cnt / 2];
-		if (100 <= __app_latency_cnt) {
-			l_90th = __app_latency_val[(__app_latency_cnt / 10) * 9];
-			l_99th = __app_latency_val[(__app_latency_cnt / 100) * 99];
-		}
-		if (1000 <= __app_latency_cnt)
-			l_999th = __app_latency_val[(__app_latency_cnt / 1000) * 999];
-		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
-		{
-			char b50th[256], *p50th = b50th, b90th[256], *p90th = b90th, b99th[256], *p99th = b99th, b999th[256], *p999th = b999th;
-			if (l_50th)
-				snprintf(b50th, sizeof(b50th), "50%%-ile %lu ns", l_50th);
-			else
-				snprintf(b50th, sizeof(b50th), "50%%-ile -");
-			if (l_90th)
-				snprintf(b90th, sizeof(b90th), "90%%-ile %lu ns", l_90th);
-			else
-				snprintf(b90th, sizeof(b90th), "90%%-ile -");
-			if (l_99th)
-				snprintf(b99th, sizeof(b99th), "99%%-ile %lu ns", l_99th);
-			else
-				snprintf(b99th, sizeof(b99th), "99%%-ile -");
-			if (l_999th)
-				snprintf(b999th, sizeof(b999th), "99.9%%-ile %lu ns", l_999th);
-			else
-				snprintf(b999th, sizeof(b999th), "99.9%%-ile -");
-			__APP_PRINTF("throughput rx %lu bps %lu pps, tx %lu bps %lu pps, latency %s %s %s %s\n",
-					__rx_bytes_prev[0] * 8,
-					__rx_pps_prev[0],
-					__tx_bytes_prev[0] * 8,
-					__tx_pps_prev[0],
-					p50th, p90th, p99th, p999th
-			      ); fflush(stdout);
-		}
-	}
 	return ret;
 }
