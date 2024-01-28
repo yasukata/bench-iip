@@ -29,8 +29,6 @@
 
 #include <arpa/inet.h>
 
-#include <pthread.h>
-
 #if defined(__linux__)
 #include <numa.h>
 #define mem_alloc_local	numa_alloc_local
@@ -149,8 +147,7 @@ struct tcp_opaque {
 static uint8_t __app_close_posted = 0;
 static uint8_t __app_remote_stop_handled = 0;
 
-static pthread_spinlock_t global_lock;
-static uint64_t __app_active_conn = 0;
+static _Atomic uint64_t __app_active_conn = 0;
 static uint16_t __app_tcp_port_affinty_map[0xffff];
 static uint64_t __app_dbg_prev_print = 0;
 static struct thread_data *__app_td[MAX_THREAD] = { 0 };
@@ -563,13 +560,11 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
 	to->handle = handle;
-	pthread_spin_lock(&global_lock);
 	{
 		void **opaque_array = (void **) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++__app_active_conn);
 	}
-	pthread_spin_unlock(&global_lock);
 	{
 		void **opaque_array = (void **) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
@@ -593,9 +588,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
-		pthread_spin_lock(&global_lock);
 		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++__app_active_conn);
-		pthread_spin_unlock(&global_lock);
 		if (!__app_start_time)
 			__app_start_time = BENCH_IIP_NOW(opaque);
 		{
@@ -711,9 +704,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 		if (td->close_state == 1 && !td->tcp.conn_list_cnt)
 			td->should_stop = 1;
 	}
-	pthread_spin_lock(&global_lock);
 	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --__app_active_conn);
-	pthread_spin_unlock(&global_lock);
 }
 
 static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
@@ -885,9 +876,6 @@ static int qsort_uint64_cmp(const void *a, const void *b)
 int main(int argc, char *const *argv)
 {
 	int ret = 0;
-	{
-		assert(!pthread_spin_init(&global_lock, PTHREAD_PROCESS_PRIVATE /* thread only */));
-	}
 	ret = __iosub_main(argc, argv);
 	if (__app_latency_val) {
 		static uint64_t l_50th, l_90th, l_99th, l_999th;
@@ -928,9 +916,6 @@ int main(int argc, char *const *argv)
 					p50th, p90th, p99th, p999th
 			      ); fflush(stdout);
 		}
-	}
-	{
-		assert(!pthread_spin_destroy(&global_lock));
 	}
 	return ret;
 }
