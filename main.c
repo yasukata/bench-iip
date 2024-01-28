@@ -103,6 +103,10 @@ static uint64_t BENCH_IIP_NOW(void *opaque)
 
 #define NUM_MONITOR_LATENCY_RECORD (5000000UL)
 
+#ifndef __APP_PRINTF
+#define __APP_PRINTF printf
+#endif
+
 struct thread_data {
 	uint16_t core_id;
 	void *workspace;
@@ -218,7 +222,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			if (__app_remote_ip4_addr_be) {
 				if (!td->core_id) {
 					{ /* get port affinity map */
-						printf("getting affinity map for %u ports ...", MAX_PORT_CNT); fflush(stdout);
+						__APP_PRINTF("getting affinity map for %u ports ...", MAX_PORT_CNT); fflush(stdout);
 						{
 							uint16_t i;
 							for (i = 0; i < MAX_PORT_CNT; i++) {
@@ -230,13 +234,13 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 									__app_tcp_port_affinty_map[i] = port;
 								else {
 									assert(!i);
-									printf("RSS not supported\n"); fflush(stdout);
+									__APP_PRINTF("RSS not supported\n"); fflush(stdout);
 									__app_tcp_port_affinty_map[i] = 0;
 									break;
 								}
 							}
 						}
-						printf("ok\n"); fflush(stdout);
+						__APP_PRINTF("ok\n"); fflush(stdout);
 					}
 				}
 				td->app_state = 1;
@@ -366,7 +370,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 							if (__app_td[i]) {
 								uint8_t idx = (__app_td[i]->monitor.idx ? 0 : 1);
 								if (__app_td[i]->monitor.counter[idx].rx_pkt || __app_td[i]->monitor.counter[idx].tx_pkt) {
-									printf("[%u] payload: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
+									__APP_PRINTF("[%u] payload: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
 											i,
 											__app_td[i]->monitor.counter[idx].rx_bytes / 125000UL,
 											__app_td[i]->monitor.counter[idx].rx_pkt,
@@ -390,7 +394,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					__tx_pps_prev[1] = tx_pkt;
 					__tx_bytes_prev[0] = __tx_bytes_prev[1];
 					__tx_bytes_prev[1] = tx_bytes;
-					printf("paylaod total: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
+					__APP_PRINTF("paylaod total: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
 							rx_bytes / 125000UL,
 							rx_pkt,
 							tx_bytes / 125000UL,
@@ -409,7 +413,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						time_t t = time(NULL);
 						struct tm lt;
 						localtime_r(&t, &lt);
-						printf("%04u-%02u-%02u %02u:%02u:%02u : %lu sec has passed, now stopping the program ...\n",
+						__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : %lu sec has passed, now stopping the program ...\n",
 								lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
 								lt.tm_hour, lt.tm_min, lt.tm_sec,
 								__app_duration); fflush(stdout);
@@ -421,7 +425,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 										ip4_be, htons(i),
 										__app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
 										opaque)) {
-								printf("send stop request to the remote host (local port %u)\n", i); fflush(stdout);
+								__APP_PRINTF("send stop request to the remote host (local port %u)\n", i); fflush(stdout);
 								assert(!iip_tcp_connect(__app_td[td->core_id]->workspace,
 											mac, ip4_be, htons(i),
 											__app_remote_mac, __app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
@@ -447,7 +451,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						time_t t = time(NULL);
 						struct tm lt;
 						localtime_r(&t, &lt);
-						printf("%04u-%02u-%02u %02u:%02u:%02u : close requested\n",
+						__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : close requested\n",
 								lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
 								lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 					}
@@ -574,7 +578,7 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 		time_t t = time(NULL);
 		struct tm lt;
 		localtime_r(&t, &lt);
-		printf("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
+		__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
 				lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
 				lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 		__app_close_posted = 1;
@@ -598,7 +602,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 			to->handle = handle;
 			td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
 			if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be == htons(50000 /* remote shutdown */)) {
-				printf("remote stop request is handled\n");
+				__APP_PRINTF("remote stop request is handled\n");
 				__app_remote_stop_handled = 1;
 			} else {
 				uint16_t i;
@@ -813,10 +817,10 @@ static void __app_init(int argc, char *const *argv)
 	if (__app_remote_ip4_addr_be) {
 		switch (__app_mode) {
 		case 1: /* ping-pong */
-			printf("client: ping-pong mode\n"); fflush(stdout);
+			__APP_PRINTF("client: ping-pong mode\n"); fflush(stdout);
 			break;
 		case 2: /* burst */
-			printf("client: burst mode\n"); fflush(stdout);
+			__APP_PRINTF("client: burst mode\n"); fflush(stdout);
 			break;
 		default:
 			assert(0);
@@ -826,7 +830,7 @@ static void __app_init(int argc, char *const *argv)
 		assert(__app_concurrency);
 		if (__app_pacing_pps)
 			assert(__app_io_depth == 1);
-		printf("client: connect to %u.%u.%u.%u:%u with concurrency %u, data len %u, io-depth %u, pacing %lu rps, duration %lu sec\n",
+		__APP_PRINTF("client: connect to %u.%u.%u.%u:%u with concurrency %u, data len %u, io-depth %u, pacing %lu rps, duration %lu sec\n",
 				(__app_remote_ip4_addr_be >>  0) & 0x0ff,
 				(__app_remote_ip4_addr_be >>  8) & 0x0ff,
 				(__app_remote_ip4_addr_be >> 16) & 0x0ff,
@@ -841,17 +845,17 @@ static void __app_init(int argc, char *const *argv)
 		assert(!__app_pacing_pps);
 		switch (__app_mode) {
 		case 1: /* ping-pong */
-			printf("server: ping-pong mode\n"); fflush(stdout);
+			__APP_PRINTF("server: ping-pong mode\n"); fflush(stdout);
 			assert(__app_payload_len);
 			break;
 		case 2: /* burst (ignore) */
-			printf("server: burst mode (just ignore incoming data)\n"); fflush(stdout);
+			__APP_PRINTF("server: burst mode (just ignore incoming data)\n"); fflush(stdout);
 			break;
 		default:
 			assert(0);
 			break;
 		}
-		printf("server listens on %u, data len %u\n", ntohs(__app_l4_port_be), __app_payload_len); fflush(stdout);
+		__APP_PRINTF("server listens on %u, data len %u\n", ntohs(__app_l4_port_be), __app_payload_len); fflush(stdout);
 	}
 
 	signal(SIGINT, sig_h);
@@ -879,7 +883,7 @@ int main(int argc, char *const *argv)
 	ret = __iosub_main(argc, argv);
 	if (__app_latency_val) {
 		static uint64_t l_50th, l_90th, l_99th, l_999th;
-		printf("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
+		__APP_PRINTF("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
 		qsort(__app_latency_val, __app_latency_cnt, sizeof(__app_td[0]->monitor.latency.val[0]), qsort_uint64_cmp);
 		if (2 < __app_latency_cnt)
 			l_50th = __app_latency_val[__app_latency_cnt / 2];
@@ -908,7 +912,7 @@ int main(int argc, char *const *argv)
 				snprintf(b999th, sizeof(b999th), "99.9%%-ile %lu ns", l_999th);
 			else
 				snprintf(b999th, sizeof(b999th), "99.9%%-ile -");
-			printf("throughput rx %lu bps %lu pps, tx %lu bps %lu pps, latency %s %s %s %s\n",
+			__APP_PRINTF("throughput rx %lu bps %lu pps, tx %lu bps %lu pps, latency %s %s %s %s\n",
 					__rx_bytes_prev[0] * 8,
 					__rx_pps_prev[0],
 					__tx_bytes_prev[0] * 8,
