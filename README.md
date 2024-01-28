@@ -1317,7 +1317,7 @@ OSNAME = $(shell uname -s)
 ifeq ($(OSNAME),Linux)
 CFLAGS += -D_POSIX_C_SOURCE=200112L -std=c17
 else ifeq ($(OSNAME),FreeBSD)
-CFLAGS += -std=c89
+CFLAGS += -std=c17
 endif
 ```
 
