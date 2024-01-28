@@ -75,6 +75,7 @@ static void __debug_printf(const char *format, ...)
 
 #include "iip/main.c"
 
+#if !defined(APP_IIP_OPS_UTIL_NOW_NS_NONE)
 static void iip_ops_util_now_ns(uint32_t t[3], void *opaque)
 {
 	struct timespec ts;
@@ -86,14 +87,15 @@ static void iip_ops_util_now_ns(uint32_t t[3], void *opaque)
 		(void) opaque;
 	}
 }
+#endif
 
 static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t, uint32_t, uint16_t, void *);
 
-static uint64_t NOW(void)
+static uint64_t BENCH_IIP_NOW(void *opaque)
 {
-	struct timespec __ts;
-	assert(!clock_gettime(CLOCK_REALTIME, &__ts));
-	return (__ts.tv_sec * 1000000000UL + __ts.tv_nsec);
+	uint32_t t[3];
+	iip_ops_util_now_ns(t, opaque);
+	return (((uint64_t) t[0] << 32) + (uint64_t) t[1]) * 1000000000UL + (uint64_t) t[2];
 }
 
 #define MAX_THREAD (256)
@@ -196,11 +198,11 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 				}
 			}
 			if (__app_pacing_pps) {
-				to->prev_sent = NOW();
+				to->prev_sent = BENCH_IIP_NOW(opaque);
 				to->sent += cnt;
 			}
 			if (__app_mode == 1 /* ping-pong */)
-				to->monitor.ts = NOW();
+				to->monitor.ts = BENCH_IIP_NOW(opaque);
 			td->monitor.counter[td->monitor.idx].tx_bytes += l;
 			td->monitor.counter[td->monitor.idx].tx_pkt += cnt;
 		}
@@ -255,7 +257,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				if (macsum)
 					td->app_state = 2;
 				else if (!td->core_id) {
-					uint64_t now = NOW();
+					uint64_t now = BENCH_IIP_NOW(opaque);
 					if (1000000000UL < (now - td->prev_arp)) {
 						IIP_OPS_DEBUG_PRINTF("sending arp request ... to %u.%u.%u.%u\n",
 								(__app_remote_ip4_addr_be >>  0) & 0xff,
@@ -333,7 +335,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					uint16_t i;
 					for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 						if (td->tcp.conn_list[i]->sent != td->payload.cnt) {
-							if ((1000000000UL / __app_pacing_pps) < NOW() - td->tcp.conn_list[i]->prev_sent) {
+							if ((1000000000UL / __app_pacing_pps) < BENCH_IIP_NOW(opaque) - td->tcp.conn_list[i]->prev_sent) {
 								__tcp_send_content(td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], td->tcp.conn_list[i]->cur, td->payload.cnt - td->tcp.conn_list[i]->sent, opaque);
 								if (++td->tcp.conn_list[i]->cur == td->payload.cnt)
 									td->tcp.conn_list[i]->cur = 0;
@@ -346,7 +348,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			break;
 		}
 		if (!__app_close_posted && !td->core_id) {
-			uint64_t now = NOW();
+			uint64_t now = BENCH_IIP_NOW(opaque);
 			if (1000000000UL < now - __app_dbg_prev_print) {
 				{
 					uint16_t i;
@@ -405,7 +407,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			*next_us = 1000000U;
 		if (!td->core_id) {
 			if (!__app_close_posted && __app_duration && __app_start_time) {
-				if (__app_start_time + __app_duration * 1000000000UL < NOW()) {
+				if (__app_start_time + __app_duration * 1000000000UL < BENCH_IIP_NOW(opaque)) {
 					{
 						time_t t = time(NULL);
 						struct tm lt;
@@ -595,7 +597,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++__app_active_conn);
 		pthread_spin_unlock(&global_lock);
 		if (!__app_start_time)
-			__app_start_time = NOW();
+			__app_start_time = BENCH_IIP_NOW(opaque);
 		{
 			struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
@@ -638,7 +640,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 				{
 					struct thread_data *td = (struct thread_data *) opaque_array[1];
 					{
-						uint64_t now = NOW();
+						uint64_t now = BENCH_IIP_NOW(opaque);
 						td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
 						((struct tcp_opaque *) tcp_opaque)->monitor.ts = now;
 					}
