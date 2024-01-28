@@ -170,14 +170,14 @@ static uint64_t *__app_latency_val = NULL;
 
 static uint8_t __app_should_stop(void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	struct thread_data *td = (struct thread_data *) opaque_array[1];
 	return td->should_stop;
 }
 
 static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur, uint16_t cnt, void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		{
@@ -209,7 +209,7 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 
 static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		switch (td->app_state) {
@@ -451,7 +451,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 					}
 					if (__app_remote_ip4_addr_be && !td->core_id) {
-						assert((__app_latency_val = mem_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
+						assert((__app_latency_val = (uint64_t *) mem_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
 						{
 							uint16_t i;
 							for (i = 0; i < MAX_THREAD; i++) {
@@ -490,7 +490,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 {
 	struct thread_data *td;
-	assert((td = mem_alloc_local(sizeof(struct thread_data))) != NULL);
+	assert((td = (struct thread_data *) mem_alloc_local(sizeof(struct thread_data))) != NULL);
 	memset(td, 0, sizeof(struct thread_data));
 	td->core_id = core_id;
 	td->workspace = workspace;
@@ -561,13 +561,13 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	to->handle = handle;
 	pthread_spin_lock(&global_lock);
 	{
-		void **opaque_array = (void *) opaque;
+		void **opaque_array = (void **) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++__app_active_conn);
 	}
 	pthread_spin_unlock(&global_lock);
 	{
-		void **opaque_array = (void *) opaque;
+		void **opaque_array = (void **) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
 	}
@@ -586,7 +586,7 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 
 static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		pthread_spin_lock(&global_lock);
@@ -595,7 +595,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 		if (!__app_start_time)
 			__app_start_time = NOW();
 		{
-			struct tcp_opaque *to = mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
+			struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
 			memset(to, 0, sizeof(struct tcp_opaque));
 			to->handle = handle;
@@ -620,7 +620,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 				void *tcp_opaque,
 				void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		{
@@ -632,7 +632,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 		switch (__app_mode) {
 		case 1: /* ping-pong */
 			if (__app_remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
-				void **opaque_array = (void *) opaque;
+				void **opaque_array = (void **) opaque;
 				{
 					struct thread_data *td = (struct thread_data *) opaque_array[1];
 					{
@@ -645,7 +645,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 			if (__app_pacing_pps)
 				((struct tcp_opaque *) tcp_opaque)->sent--;
 			else
-				__tcp_send_content(handle, tcp_opaque, 0, td->payload.cnt, opaque);
+				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
 			break;
 		case 2: /* burst */
 			break;
@@ -671,9 +671,9 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 			if (__app_pacing_pps)
 				((struct tcp_opaque *) tcp_opaque)->sent--;
 			else {
-				__tcp_send_content(handle, tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
+				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
 				{
-					void **opaque_array = (void *) opaque;
+					void **opaque_array = (void **) opaque;
 					struct thread_data *td = (struct thread_data *) opaque_array[1];
 					{
 						if (++((struct tcp_opaque *) tcp_opaque)->cur == td->payload.cnt)
@@ -691,7 +691,7 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 
 static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_opaque, void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		{
@@ -714,7 +714,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 
 static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
 {
-	void **opaque_array = (void *) opaque;
+	void **opaque_array = (void **) opaque;
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[1];
 		{
