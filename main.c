@@ -742,6 +742,16 @@ static void sig_h(int sig __attribute__((unused)))
 	signal(SIGINT, SIG_DFL);
 }
 
+static int qsort_uint64_cmp(const void *a, const void *b)
+{
+	if (*((uint64_t *) a) == *((uint64_t *) b))
+		return 0;
+	else if (*((uint64_t *) a) < *((uint64_t *) b))
+		return -1;
+	else
+		return 1;
+}
+
 static void __app_exit(void *app_global_opaque)
 {
 	(void) app_global_opaque;
@@ -913,16 +923,6 @@ static void *__app_init(int argc, char *const *argv)
 #include M2S(IOSUB_MAIN_C)
 #undef _M2S
 #undef M2S
-
-static int qsort_uint64_cmp(const void *a, const void *b)
-{
-	if (*((uint64_t *) a) == *((uint64_t *) b))
-		return 0;
-	else if (*((uint64_t *) a) < *((uint64_t *) b))
-		return -1;
-	else
-		return 1;
-}
 
 int main(int argc, char *const *argv)
 {
