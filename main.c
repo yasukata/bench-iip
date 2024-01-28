@@ -59,6 +59,7 @@ static void mem_free(void *ptr, size_t len)
 
 static uint8_t verbose_level = 0;
 
+#ifndef IIP_OPS_DEBUG_PRINTF
 static void __debug_printf(const char *format, ...)
 {
 	if (verbose_level) {
@@ -70,6 +71,7 @@ static void __debug_printf(const char *format, ...)
 	}
 }
 #define IIP_OPS_DEBUG_PRINTF __debug_printf
+#endif
 
 #include "iip/main.c"
 
