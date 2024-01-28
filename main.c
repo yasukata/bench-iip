@@ -176,7 +176,7 @@ static uint64_t *__app_latency_val = NULL;
 static uint8_t __app_should_stop(void *opaque)
 {
 	void **opaque_array = (void **) opaque;
-	struct thread_data *td = (struct thread_data *) opaque_array[1];
+	struct thread_data *td = (struct thread_data *) opaque_array[2];
 	return td->should_stop;
 }
 
@@ -184,7 +184,7 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 {
 	void **opaque_array = (void **) opaque;
 	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			uint32_t l = 0;
 			{
@@ -216,7 +216,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 {
 	void **opaque_array = (void **) opaque;
 	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		switch (td->app_state) {
 		case 0:
 			if (__app_remote_ip4_addr_be) {
@@ -566,12 +566,12 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	to->handle = handle;
 	{
 		void **opaque_array = (void **) opaque;
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++__app_active_conn);
 	}
 	{
 		void **opaque_array = (void **) opaque;
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
 	}
 	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == htons(50000 /* remote shutdown */)) {
@@ -591,7 +591,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 {
 	void **opaque_array = (void **) opaque;
 	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++__app_active_conn);
 		if (!__app_start_time)
 			__app_start_time = BENCH_IIP_NOW(opaque);
@@ -623,7 +623,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 {
 	void **opaque_array = (void **) opaque;
 	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			uint8_t idx = td->monitor.idx;
 			__asm__ volatile ("" ::: "memory");
@@ -635,7 +635,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 			if (__app_remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
 				void **opaque_array = (void **) opaque;
 				{
-					struct thread_data *td = (struct thread_data *) opaque_array[1];
+					struct thread_data *td = (struct thread_data *) opaque_array[2];
 					{
 						uint64_t now = BENCH_IIP_NOW(opaque);
 						td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
@@ -675,7 +675,7 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
 				{
 					void **opaque_array = (void **) opaque;
-					struct thread_data *td = (struct thread_data *) opaque_array[1];
+					struct thread_data *td = (struct thread_data *) opaque_array[2];
 					{
 						if (++((struct tcp_opaque *) tcp_opaque)->cur == td->payload.cnt)
 							((struct tcp_opaque *) tcp_opaque)->cur = 0;
@@ -694,7 +694,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 {
 	void **opaque_array = (void **) opaque;
 	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			uint16_t i;
 			for (i = 0; i < td->tcp.conn_list_cnt; i++) {
@@ -715,7 +715,7 @@ static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void
 {
 	void **opaque_array = (void **) opaque;
 	{
-		struct thread_data *td = (struct thread_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			void *_m;
 			assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
@@ -742,7 +742,7 @@ static void sig_h(int sig __attribute__((unused)))
 	signal(SIGINT, SIG_DFL);
 }
 
-static void __app_init(int argc, char *const *argv)
+static void *__app_init(int argc, char *const *argv)
 {
 	{ /* parse arguments */
 		int ch, cnt = 0;
@@ -859,6 +859,8 @@ static void __app_init(int argc, char *const *argv)
 	}
 
 	signal(SIGINT, sig_h);
+
+	return NULL;
 }
 
 #define M2S(s) _M2S(s)
