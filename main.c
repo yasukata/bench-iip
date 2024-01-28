@@ -151,27 +151,30 @@ struct tcp_opaque {
 static uint8_t __app_close_posted = 0;
 static uint8_t __app_remote_stop_handled = 0;
 
-static _Atomic uint64_t __app_active_conn = 0;
-static uint16_t __app_tcp_port_affinty_map[0xffff];
-static uint64_t __app_dbg_prev_print = 0;
-static struct thread_data *__app_td[MAX_THREAD] = { 0 };
-
-static uint32_t __app_remote_ip4_addr_be = 0;
-static uint16_t __app_l4_port_be = 0;
-static uint8_t __app_remote_mac[6] = { 0 };
-static uint32_t __app_payload_len = 0;
-static const char *__app_msg = NULL;
-static uint32_t __app_concurrency = 1;
-static uint8_t __app_proto_id = 6; /* tcp */
-static uint8_t __app_mode = 1;
-static uint8_t __app_io_depth = 1;
-static uint64_t __app_pacing_pps = 0;
-static uint64_t __app_duration = 0;
-static uint64_t __app_start_time = 0;
-static uint64_t __rx_pps_prev[2] = { 0 }, __rx_bytes_prev[2] = { 0 }, __tx_pps_prev[2] = { 0 }, __tx_bytes_prev[2] = { 0 };
-
-static uint64_t __app_latency_cnt = 0;
-static uint64_t *__app_latency_val = NULL;
+struct app_data {
+	_Atomic uint64_t active_conn;
+	uint16_t tcp_port_affinty_map[0xffff];
+	uint64_t dbg_prev_print;
+	struct thread_data *tds[MAX_THREAD];
+	uint32_t remote_ip4_addr_be;
+	uint16_t l4_port_be;
+	uint8_t remote_mac[6];
+	uint32_t payload_len;
+	const char *app_msg;
+	uint32_t concurrency;
+	uint8_t proto_id;
+	uint8_t app_mode;
+	uint8_t io_depth;
+	uint64_t pacing_pps;
+	uint64_t duration;
+	uint64_t start_time;
+	uint64_t rx_pps_prev[2];
+	uint64_t rx_bytes_prev[2];
+	uint64_t tx_pps_prev[2];
+	uint64_t tx_bytes_prev[2];
+	uint64_t latency_cnt;
+	uint64_t *latency_val;
+};
 
 static uint8_t __app_should_stop(void *opaque)
 {
@@ -184,6 +187,7 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 {
 	void **opaque_array = (void **) opaque;
 	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			uint32_t l = 0;
@@ -198,11 +202,11 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 					assert(!iip_tcp_send(td->workspace, handle, m, opaque));
 				}
 			}
-			if (__app_pacing_pps) {
+			if (ad->pacing_pps) {
 				to->prev_sent = BENCH_IIP_NOW(opaque);
 				to->sent += cnt;
 			}
-			if (__app_mode == 1 /* ping-pong */)
+			if (ad->app_mode == 1 /* ping-pong */)
 				to->monitor.ts = BENCH_IIP_NOW(opaque);
 			td->monitor.counter[td->monitor.idx].tx_bytes += l;
 			td->monitor.counter[td->monitor.idx].tx_pkt += cnt;
@@ -216,10 +220,11 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 {
 	void **opaque_array = (void **) opaque;
 	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		switch (td->app_state) {
 		case 0:
-			if (__app_remote_ip4_addr_be) {
+			if (ad->remote_ip4_addr_be) {
 				if (!td->core_id) {
 					{ /* get port affinity map */
 						__APP_PRINTF("getting affinity map for %u ports ...", MAX_PORT_CNT); fflush(stdout);
@@ -228,14 +233,14 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 							for (i = 0; i < MAX_PORT_CNT; i++) {
 								uint16_t port = helper_ip4_get_connection_affinity(6 /* tcp */,
 										ip4_be, htons(i),
-										__app_remote_ip4_addr_be, __app_l4_port_be,
+										ad->remote_ip4_addr_be, ad->l4_port_be,
 										opaque);
 								if (port != UINT16_MAX)
-									__app_tcp_port_affinty_map[i] = port;
+									ad->tcp_port_affinty_map[i] = port;
 								else {
 									assert(!i);
 									__APP_PRINTF("RSS not supported\n"); fflush(stdout);
-									__app_tcp_port_affinty_map[i] = 0;
+									ad->tcp_port_affinty_map[i] = 0;
 									break;
 								}
 							}
@@ -253,7 +258,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 				{
 					uint8_t i;
 					for (i = 0; i < 6; i++)
-						macsum += __app_remote_mac[i];
+						macsum += ad->remote_mac[i];
 				}
 				if (macsum)
 					td->app_state = 2;
@@ -261,11 +266,11 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					uint64_t now = BENCH_IIP_NOW(opaque);
 					if (1000000000UL < (now - td->prev_arp)) {
 						IIP_OPS_DEBUG_PRINTF("sending arp request ... to %u.%u.%u.%u\n",
-								(__app_remote_ip4_addr_be >>  0) & 0xff,
-								(__app_remote_ip4_addr_be >>  8) & 0xff,
-								(__app_remote_ip4_addr_be >> 16) & 0xff,
-								(__app_remote_ip4_addr_be >> 24) & 0xff);
-						iip_arp_request(td->workspace, mac, ip4_be, __app_remote_ip4_addr_be, opaque);
+								(ad->remote_ip4_addr_be >>  0) & 0xff,
+								(ad->remote_ip4_addr_be >>  8) & 0xff,
+								(ad->remote_ip4_addr_be >> 16) & 0xff,
+								(ad->remote_ip4_addr_be >> 24) & 0xff);
+						iip_arp_request(td->workspace, mac, ip4_be, ad->remote_ip4_addr_be, opaque);
 						td->prev_arp = now;
 					}
 				}
@@ -274,25 +279,25 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		case 2:
 			{
 				uint16_t i;
-				for (i = 0; i < __app_concurrency; i++) {
+				for (i = 0; i < ad->concurrency; i++) {
 					uint16_t j;
 					for (j = 1 /* minimum local port number */; j < 0xffff; j++) {
-						if (__app_tcp_port_affinty_map[j] == td->core_id) {
+						if (ad->tcp_port_affinty_map[j] == td->core_id) {
 							if (!(td->tcp.used_port_bm[j >> 3] & (1 << (j & 7)))) {
 								td->tcp.used_port_bm[j >> 3] |= (1 << (j & 7));
-								switch (__app_proto_id) {
+								switch (ad->proto_id) {
 								case 6:
 									{
 										IIP_OPS_DEBUG_PRINTF("%u: try connect to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
 												td->core_id,
-												(uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff),
-												(uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff),
-												(uint8_t)((__app_remote_ip4_addr_be >> 16) & 0xff),
-												(uint8_t)((__app_remote_ip4_addr_be >> 24) & 0xff),
-												ntohs(__app_l4_port_be), j);
+												(uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff),
+												ntohs(ad->l4_port_be), j);
 										assert(!iip_tcp_connect(td->workspace,
 													mac, ip4_be, htons(j),
-													__app_remote_mac, __app_remote_ip4_addr_be, __app_l4_port_be,
+													ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
 													opaque));
 									}
 									break;
@@ -302,17 +307,17 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 										assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);;
 										IIP_OPS_DEBUG_PRINTF("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
 												td->core_id,
-												(uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff),
-												(uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff),
-												(uint8_t)((__app_remote_ip4_addr_be >> 16) & 0xff),
-												(uint8_t)((__app_remote_ip4_addr_be >> 24) & 0xff),
-												ntohs(__app_l4_port_be), j);
+												(uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff),
+												ntohs(ad->l4_port_be), j);
 										{
 											uint16_t k;
-											for (k = 0; k < __app_io_depth; k++) {
+											for (k = 0; k < ad->io_depth; k++) {
 												assert(!iip_udp_send(td->workspace,
 															mac, ip4_be, htons(j),
-															__app_remote_mac, __app_remote_ip4_addr_be, __app_l4_port_be,
+															ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
 															m, opaque));
 											}
 										}
@@ -331,12 +336,12 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 			}
 			break;
 		case 3:
-			if (__app_pacing_pps) {
+			if (ad->pacing_pps) {
 				if (td->tcp.conn_list_cnt) {
 					uint16_t i;
 					for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 						if (td->tcp.conn_list[i]->sent != td->payload.cnt) {
-							if ((1000000000UL / __app_pacing_pps) < BENCH_IIP_NOW(opaque) - td->tcp.conn_list[i]->prev_sent) {
+							if ((1000000000UL / ad->pacing_pps) < BENCH_IIP_NOW(opaque) - td->tcp.conn_list[i]->prev_sent) {
 								__tcp_send_content(td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], td->tcp.conn_list[i]->cur, td->payload.cnt - td->tcp.conn_list[i]->sent, opaque);
 								if (++td->tcp.conn_list[i]->cur == td->payload.cnt)
 									td->tcp.conn_list[i]->cur = 0;
@@ -350,15 +355,15 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		}
 		if (!__app_close_posted && !td->core_id) {
 			uint64_t now = BENCH_IIP_NOW(opaque);
-			if (1000000000UL < now - __app_dbg_prev_print) {
+			if (1000000000UL < now - ad->dbg_prev_print) {
 				{
 					uint16_t i;
 					for (i = 0; i < MAX_THREAD; i++) {
-						if (__app_td[i]) {
-							if (__app_td[i]->monitor.idx)
-								__app_td[i]->monitor.idx = 0;
+						if (ad->tds[i]) {
+							if (ad->tds[i]->monitor.idx)
+								ad->tds[i]->monitor.idx = 0;
 							else
-								__app_td[i]->monitor.idx = 1;
+								ad->tds[i]->monitor.idx = 1;
 						}
 					}
 				}
@@ -367,33 +372,33 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					{
 						uint16_t i;
 						for (i = 0; i < MAX_THREAD; i++) {
-							if (__app_td[i]) {
-								uint8_t idx = (__app_td[i]->monitor.idx ? 0 : 1);
-								if (__app_td[i]->monitor.counter[idx].rx_pkt || __app_td[i]->monitor.counter[idx].tx_pkt) {
+							if (ad->tds[i]) {
+								uint8_t idx = (ad->tds[i]->monitor.idx ? 0 : 1);
+								if (ad->tds[i]->monitor.counter[idx].rx_pkt || ad->tds[i]->monitor.counter[idx].tx_pkt) {
 									__APP_PRINTF("[%u] payload: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
 											i,
-											__app_td[i]->monitor.counter[idx].rx_bytes / 125000UL,
-											__app_td[i]->monitor.counter[idx].rx_pkt,
-											__app_td[i]->monitor.counter[idx].tx_bytes / 125000UL,
-											__app_td[i]->monitor.counter[idx].tx_pkt
+											ad->tds[i]->monitor.counter[idx].rx_bytes / 125000UL,
+											ad->tds[i]->monitor.counter[idx].rx_pkt,
+											ad->tds[i]->monitor.counter[idx].tx_bytes / 125000UL,
+											ad->tds[i]->monitor.counter[idx].tx_pkt
 											); fflush(stdout);
-									rx_bytes += __app_td[i]->monitor.counter[idx].rx_bytes;
-									tx_bytes += __app_td[i]->monitor.counter[idx].tx_bytes;
-									rx_pkt += __app_td[i]->monitor.counter[idx].rx_pkt;
-									tx_pkt += __app_td[i]->monitor.counter[idx].tx_pkt;
+									rx_bytes += ad->tds[i]->monitor.counter[idx].rx_bytes;
+									tx_bytes += ad->tds[i]->monitor.counter[idx].tx_bytes;
+									rx_pkt += ad->tds[i]->monitor.counter[idx].rx_pkt;
+									tx_pkt += ad->tds[i]->monitor.counter[idx].tx_pkt;
 								}
-								memset(&__app_td[i]->monitor.counter[idx], 0, sizeof(__app_td[i]->monitor.counter[idx]));
+								memset(&ad->tds[i]->monitor.counter[idx], 0, sizeof(ad->tds[i]->monitor.counter[idx]));
 							}
 						}
 					}
-					__rx_pps_prev[0] = __rx_pps_prev[1];
-					__rx_pps_prev[1] = rx_pkt;
-					__rx_bytes_prev[0] = __rx_bytes_prev[1];
-					__rx_bytes_prev[1] = rx_bytes;
-					__tx_pps_prev[0] = __tx_pps_prev[1];
-					__tx_pps_prev[1] = tx_pkt;
-					__tx_bytes_prev[0] = __tx_bytes_prev[1];
-					__tx_bytes_prev[1] = tx_bytes;
+					ad->rx_pps_prev[0] = ad->rx_pps_prev[1];
+					ad->rx_pps_prev[1] = rx_pkt;
+					ad->rx_bytes_prev[0] = ad->rx_bytes_prev[1];
+					ad->rx_bytes_prev[1] = rx_bytes;
+					ad->tx_pps_prev[0] = ad->tx_pps_prev[1];
+					ad->tx_pps_prev[1] = tx_pkt;
+					ad->tx_bytes_prev[0] = ad->tx_bytes_prev[1];
+					ad->tx_bytes_prev[1] = tx_bytes;
 					__APP_PRINTF("paylaod total: rx %lu Mbps (%lu pps), tx %lu Mbps (%lu pps)\n",
 							rx_bytes / 125000UL,
 							rx_pkt,
@@ -401,14 +406,14 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 							tx_pkt
 						  ); fflush(stdout);
 				}
-				__app_dbg_prev_print = now;
+				ad->dbg_prev_print = now;
 			}
-			*next_us = (__app_dbg_prev_print + 1000000000U - now) / 1000U;
+			*next_us = (ad->dbg_prev_print + 1000000000U - now) / 1000U;
 		} else
 			*next_us = 1000000U;
 		if (!td->core_id) {
-			if (!__app_close_posted && __app_duration && __app_start_time) {
-				if (__app_start_time + __app_duration * 1000000000UL < BENCH_IIP_NOW(opaque)) {
+			if (!__app_close_posted && ad->duration && ad->start_time) {
+				if (ad->start_time + ad->duration * 1000000000UL < BENCH_IIP_NOW(opaque)) {
 					{
 						time_t t = time(NULL);
 						struct tm lt;
@@ -416,19 +421,19 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : %lu sec has passed, now stopping the program ...\n",
 								lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
 								lt.tm_hour, lt.tm_min, lt.tm_sec,
-								__app_duration); fflush(stdout);
+								ad->duration); fflush(stdout);
 					}
 					{
 						uint16_t i;
 						for (i = MAX_PORT_CNT; i < MAX_PORT_CNT + MAX_PORT_CNT; i++) {
 							if (td->core_id == helper_ip4_get_connection_affinity(6 /* tcp */,
 										ip4_be, htons(i),
-										__app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
+										ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
 										opaque)) {
 								__APP_PRINTF("send stop request to the remote host (local port %u)\n", i); fflush(stdout);
-								assert(!iip_tcp_connect(__app_td[td->core_id]->workspace,
+								assert(!iip_tcp_connect(ad->tds[td->core_id]->workspace,
 											mac, ip4_be, htons(i),
-											__app_remote_mac, __app_remote_ip4_addr_be, htons(50000 /* remote shutdown */),
+											ad->remote_mac, ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
 											opaque));
 								break;
 							}
@@ -443,7 +448,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 		if (__app_close_posted) {
 			switch (td->close_state) {
 				case 0:
-					if (__app_remote_ip4_addr_be && !td->core_id) {
+					if (ad->remote_ip4_addr_be && !td->core_id) {
 						if (!__app_remote_stop_handled)
 							break;
 					}
@@ -455,20 +460,20 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
 								lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
 					}
-					if (__app_remote_ip4_addr_be && !td->core_id) {
-						assert((__app_latency_val = (uint64_t *) mem_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
+					if (ad->remote_ip4_addr_be && !td->core_id) {
+						assert((ad->latency_val = (uint64_t *) mem_alloc_local(NUM_MONITOR_LATENCY_RECORD * MAX_THREAD)) != NULL);
 						{
 							uint16_t i;
 							for (i = 0; i < MAX_THREAD; i++) {
-								if (__app_td[i]) {
-									uint64_t cnt = __app_td[i]->monitor.latency.cnt;
+								if (ad->tds[i]) {
+									uint64_t cnt = ad->tds[i]->monitor.latency.cnt;
 									__asm__ volatile ("" ::: "memory");
 									if (NUM_MONITOR_LATENCY_RECORD < cnt)
 										cnt = NUM_MONITOR_LATENCY_RECORD;
-									memcpy(&__app_latency_val[__app_latency_cnt],
-											__app_td[i]->monitor.latency.val,
-											sizeof(__app_td[i]->monitor.latency.val[0]) * cnt);
-									__app_latency_cnt += cnt;
+									memcpy(&ad->latency_val[ad->latency_cnt],
+											ad->tds[i]->monitor.latency.val,
+											sizeof(ad->tds[i]->monitor.latency.val[0]) * cnt);
+									ad->latency_cnt += cnt;
 								}
 							}
 						}
@@ -494,19 +499,21 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 
 static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 {
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
 	struct thread_data *td;
 	assert((td = (struct thread_data *) mem_alloc_local(sizeof(struct thread_data))) != NULL);
 	memset(td, 0, sizeof(struct thread_data));
 	td->core_id = core_id;
 	td->workspace = workspace;
-	if (__app_payload_len) {
+	if (ad->payload_len) {
 		uint32_t l = 0;
-		while (l != __app_payload_len) {
+		while (l != ad->payload_len) {
 			assert((td->payload.pkt[td->payload.cnt] = iip_ops_pkt_alloc(opaque)) != NULL);
 			{
-				uint16_t _l = (__app_payload_len - l < MAX_PAYLOAD_LEN ? __app_payload_len - l : MAX_PAYLOAD_LEN);
-				if (__app_msg)
-					memcpy(iip_ops_pkt_get_data(td->payload.pkt[td->payload.cnt], opaque), &__app_msg[l], _l);
+				uint16_t _l = (ad->payload_len - l < MAX_PAYLOAD_LEN ? ad->payload_len - l : MAX_PAYLOAD_LEN);
+				if (ad->app_msg)
+					memcpy(iip_ops_pkt_get_data(td->payload.pkt[td->payload.cnt], opaque), &ad->app_msg[l], _l);
 				iip_ops_pkt_set_len(td->payload.pkt[td->payload.cnt], _l, opaque);
 				l += _l;
 			}
@@ -514,12 +521,14 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 			assert(td->payload.cnt < MAX_PAYLOAD_PKT_CNT);
 		}
 	}
-	__app_td[td->core_id] = td;
+	ad->tds[td->core_id] = td;
 	return td;
 }
 
 static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
 {
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
 	IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
 			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[0],
 			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[1],
@@ -532,11 +541,11 @@ static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void 
 			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[4],
 			PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque))[5]
 	      );
-	if (PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[0] == (uint8_t)((__app_remote_ip4_addr_be >>  0) & 0xff) &&
-			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[1] == (uint8_t)((__app_remote_ip4_addr_be >>  8) & 0xff) &&
-			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[2] == (uint8_t)((__app_remote_ip4_addr_be >> 16) & 0xff) &&
-			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[3] == (uint8_t)((__app_remote_ip4_addr_be >> 24) & 0xff))
-		memcpy(__app_remote_mac, PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque)), 6);
+	if (PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[0] == (uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff) &&
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[1] == (uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff) &&
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[2] == (uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff) &&
+			PB_ARP_IP_SENDER(iip_ops_pkt_get_data(m, opaque))[3] == (uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff))
+		memcpy(ad->remote_mac, PB_ARP_HW_SENDER(iip_ops_pkt_get_data(m, opaque)), 6);
 }
 
 static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __attribute__((unused)), void *opaque __attribute__((unused)))
@@ -550,9 +559,11 @@ static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __att
 
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
 {
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
 	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == htons(50000)) /* to remote shutdown */
 		return 1;
-	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == __app_l4_port_be)
+	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == ad->l4_port_be)
 		return 1;
 	else
 		return 0;
@@ -560,6 +571,8 @@ static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, vo
 
 static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m, void *opaque)
 {
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
 	struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque));
 	assert(to);
 	memset(to, 0, sizeof(struct tcp_opaque));
@@ -567,7 +580,7 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	{
 		void **opaque_array = (void **) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++__app_active_conn);
+		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++ad->active_conn);
 	}
 	{
 		void **opaque_array = (void **) opaque;
@@ -591,10 +604,11 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 {
 	void **opaque_array = (void **) opaque;
 	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++__app_active_conn);
-		if (!__app_start_time)
-			__app_start_time = BENCH_IIP_NOW(opaque);
+		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++ad->active_conn);
+		if (!ad->start_time)
+			ad->start_time = BENCH_IIP_NOW(opaque);
 		{
 			struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
 			assert(to);
@@ -606,7 +620,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 				__app_remote_stop_handled = 1;
 			} else {
 				uint16_t i;
-				for (i = 0; i < __app_io_depth; i++) {
+				for (i = 0; i < ad->io_depth; i++) {
 					__tcp_send_content(handle, to, to->cur, 1, opaque);
 					if (++to->cur == td->payload.cnt)
 						to->cur = 0;
@@ -623,6 +637,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 {
 	void **opaque_array = (void **) opaque;
 	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			uint8_t idx = td->monitor.idx;
@@ -630,9 +645,9 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 			td->monitor.counter[idx].rx_bytes += PB_TCP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
 			td->monitor.counter[idx].rx_pkt++;
 		}
-		switch (__app_mode) {
+		switch (ad->app_mode) {
 		case 1: /* ping-pong */
-			if (__app_remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
+			if (ad->remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
 				void **opaque_array = (void **) opaque;
 				{
 					struct thread_data *td = (struct thread_data *) opaque_array[2];
@@ -643,7 +658,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 					}
 				}
 			}
-			if (__app_pacing_pps)
+			if (ad->pacing_pps)
 				((struct tcp_opaque *) tcp_opaque)->sent--;
 			else
 				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
@@ -664,12 +679,14 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 			      void *tcp_opaque,
 			      void *opaque)
 {
-	if (__app_remote_ip4_addr_be) { /* client */
-		switch (__app_mode) {
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
+	if (ad->remote_ip4_addr_be) { /* client */
+		switch (ad->app_mode) {
 		case 1: /* ping-pong */
 			break;
 		case 2: /* burst */
-			if (__app_pacing_pps)
+			if (ad->pacing_pps)
 				((struct tcp_opaque *) tcp_opaque)->sent--;
 			else {
 				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
@@ -693,6 +710,7 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_opaque, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
@@ -708,13 +726,14 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 		if (td->close_state == 1 && !td->tcp.conn_list_cnt)
 			td->should_stop = 1;
 	}
-	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --__app_active_conn);
+	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --ad->active_conn);
 }
 
 static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
 			void *_m;
@@ -727,7 +746,7 @@ static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void
 						PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be,
 						PB_UDP(iip_ops_pkt_get_data(m, opaque))->src_be,
 						_m, opaque));
-			td->monitor.counter[td->monitor.idx].tx_bytes += __app_payload_len;
+			td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
 			td->monitor.counter[td->monitor.idx].tx_pkt++;
 		}
 		td->monitor.counter[td->monitor.idx].rx_bytes += PB_UDP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
@@ -754,20 +773,20 @@ static int qsort_uint64_cmp(const void *a, const void *b)
 
 static void __app_exit(void *app_global_opaque)
 {
-	(void) app_global_opaque;
-	if (__app_latency_val) {
+	struct app_data *ad = (struct app_data *) app_global_opaque;
+	if (ad->latency_val) {
 		static uint64_t l_50th, l_90th, l_99th, l_999th;
-		__APP_PRINTF("calculating latency for %lu samples ...\n", __app_latency_cnt); fflush(stdout);
-		qsort(__app_latency_val, __app_latency_cnt, sizeof(__app_td[0]->monitor.latency.val[0]), qsort_uint64_cmp);
-		if (2 < __app_latency_cnt)
-			l_50th = __app_latency_val[__app_latency_cnt / 2];
-		if (100 <= __app_latency_cnt) {
-			l_90th = __app_latency_val[(__app_latency_cnt / 10) * 9];
-			l_99th = __app_latency_val[(__app_latency_cnt / 100) * 99];
+		__APP_PRINTF("calculating latency for %lu samples ...\n", ad->latency_cnt); fflush(stdout);
+		qsort(ad->latency_val, ad->latency_cnt, sizeof(ad->tds[0]->monitor.latency.val[0]), qsort_uint64_cmp);
+		if (2 < ad->latency_cnt)
+			l_50th = ad->latency_val[ad->latency_cnt / 2];
+		if (100 <= ad->latency_cnt) {
+			l_90th = ad->latency_val[(ad->latency_cnt / 10) * 9];
+			l_99th = ad->latency_val[(ad->latency_cnt / 100) * 99];
 		}
-		if (1000 <= __app_latency_cnt)
-			l_999th = __app_latency_val[(__app_latency_cnt / 1000) * 999];
-		mem_free(__app_latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
+		if (1000 <= ad->latency_cnt)
+			l_999th = ad->latency_val[(ad->latency_cnt / 1000) * 999];
+		mem_free(ad->latency_val, NUM_MONITOR_LATENCY_RECORD * MAX_THREAD);
 		{
 			char b50th[256], *p50th = b50th, b90th[256], *p90th = b90th, b99th[256], *p99th = b99th, b999th[256], *p999th = b999th;
 			if (l_50th)
@@ -787,45 +806,54 @@ static void __app_exit(void *app_global_opaque)
 			else
 				snprintf(b999th, sizeof(b999th), "99.9%%-ile -");
 			__APP_PRINTF("throughput rx %lu bps %lu pps, tx %lu bps %lu pps, latency %s %s %s %s\n",
-					__rx_bytes_prev[0] * 8,
-					__rx_pps_prev[0],
-					__tx_bytes_prev[0] * 8,
-					__tx_pps_prev[0],
+					ad->rx_bytes_prev[0] * 8,
+					ad->rx_pps_prev[0],
+					ad->tx_bytes_prev[0] * 8,
+					ad->tx_pps_prev[0],
 					p50th, p90th, p99th, p999th
-				    ); fflush(stdout);
+			      ); fflush(stdout);
 		}
 	}
+	mem_free(app_global_opaque, sizeof(struct app_data));
 }
 
 static void *__app_init(int argc, char *const *argv)
 {
+	struct app_data *ad = mem_alloc_local(sizeof(struct app_data));
+	assert(ad);
+
+	ad->concurrency = 1;
+	ad->proto_id = 6; /* tcp */
+	ad->app_mode = 1;
+	ad->io_depth = 1;
+
 	{ /* parse arguments */
 		int ch, cnt = 0;
 		while ((ch = getopt(argc, argv, "c:d:g:l:m:n:p:r:s:t:v:")) != -1) {
 			cnt += 2;
 			switch (ch) {
 			case 'c':
-				__app_concurrency = atoi(optarg);
+				ad->concurrency = atoi(optarg);
 				break;
 			case 'd':
-				__app_io_depth = atoi(optarg);
+				ad->io_depth = atoi(optarg);
 				break;
 			case 'g':
-				__app_mode = atoi(optarg);
-				assert(0 < __app_mode && __app_mode <= 2);
+				ad->app_mode = atoi(optarg);
+				assert(0 < ad->app_mode && ad->app_mode <= 2);
 				break;
 			case 'l':
-				assert(!__app_msg);
-				__app_payload_len = atoi(optarg);
+				assert(!ad->app_msg);
+				ad->payload_len = atoi(optarg);
 				break;
 			case 'm':
-				assert(!__app_payload_len);
-				__app_msg = optarg;
-				__app_payload_len = strlen(__app_msg);
+				assert(!ad->payload_len);
+				ad->app_msg = optarg;
+				ad->payload_len = strlen(ad->app_msg);
 				break;
 			case 'n':
-				__app_proto_id = atoi(optarg);
-				switch (__app_proto_id) {
+				ad->proto_id = atoi(optarg);
+				switch (ad->proto_id) {
 				case 6:
 				case 17:
 					break;
@@ -835,16 +863,16 @@ static void *__app_init(int argc, char *const *argv)
 				}
 				break;
 			case 'p':
-				__app_l4_port_be = htons(atoi(optarg));
+				ad->l4_port_be = htons(atoi(optarg));
 				break;
 			case 'r':
-				__app_pacing_pps = strtol(optarg, NULL, 10);
+				ad->pacing_pps = strtol(optarg, NULL, 10);
 				break;
 			case 's':
-				assert(inet_pton(AF_INET, optarg, &__app_remote_ip4_addr_be) == 1);
+				assert(inet_pton(AF_INET, optarg, &ad->remote_ip4_addr_be) == 1);
 				break;
 			case 't':
-				__app_duration = strtol(optarg, NULL, 10);
+				ad->duration = strtol(optarg, NULL, 10);
 				break;
 			case 'v':
 				verbose_level = atoi(optarg);
@@ -858,19 +886,19 @@ static void *__app_init(int argc, char *const *argv)
 		argv += cnt - 1;
 	}
 
-	assert(__app_l4_port_be);
-	assert(__app_l4_port_be != htons(50000 /* remote shut down */));
+	assert(ad->l4_port_be);
+	assert(ad->l4_port_be != htons(50000 /* remote shut down */));
 
-	if (__app_mode == 1) { /* ping-pong mode only accepts data fit in a packet */
-		assert(__app_payload_len < MAX_PAYLOAD_LEN);
+	if (ad->app_mode == 1) { /* ping-pong mode only accepts data fit in a packet */
+		assert(ad->payload_len < MAX_PAYLOAD_LEN);
 	}
 
-	if (__app_proto_id == 17) { /* udp mode only accepts data fit in a packet */
-		assert(__app_payload_len < MAX_PAYLOAD_LEN);
+	if (ad->proto_id == 17) { /* udp mode only accepts data fit in a packet */
+		assert(ad->payload_len < MAX_PAYLOAD_LEN);
 	}
 
-	if (__app_remote_ip4_addr_be) {
-		switch (__app_mode) {
+	if (ad->remote_ip4_addr_be) {
+		switch (ad->app_mode) {
 		case 1: /* ping-pong */
 			__APP_PRINTF("client: ping-pong mode\n"); fflush(stdout);
 			break;
@@ -881,27 +909,27 @@ static void *__app_init(int argc, char *const *argv)
 			assert(0);
 			break;
 		}
-		assert(__app_payload_len);
-		assert(__app_concurrency);
-		if (__app_pacing_pps)
-			assert(__app_io_depth == 1);
+		assert(ad->payload_len);
+		assert(ad->concurrency);
+		if (ad->pacing_pps)
+			assert(ad->io_depth == 1);
 		__APP_PRINTF("client: connect to %u.%u.%u.%u:%u with concurrency %u, data len %u, io-depth %u, pacing %lu rps, duration %lu sec\n",
-				(__app_remote_ip4_addr_be >>  0) & 0x0ff,
-				(__app_remote_ip4_addr_be >>  8) & 0x0ff,
-				(__app_remote_ip4_addr_be >> 16) & 0x0ff,
-				(__app_remote_ip4_addr_be >> 24) & 0x0ff,
-				ntohs(__app_l4_port_be),
-				__app_concurrency,
-				__app_payload_len,
-				__app_io_depth,
-				__app_pacing_pps,
-				__app_duration); fflush(stdout);
+				(ad->remote_ip4_addr_be >>  0) & 0x0ff,
+				(ad->remote_ip4_addr_be >>  8) & 0x0ff,
+				(ad->remote_ip4_addr_be >> 16) & 0x0ff,
+				(ad->remote_ip4_addr_be >> 24) & 0x0ff,
+				ntohs(ad->l4_port_be),
+				ad->concurrency,
+				ad->payload_len,
+				ad->io_depth,
+				ad->pacing_pps,
+				ad->duration); fflush(stdout);
 	} else {
-		assert(!__app_pacing_pps);
-		switch (__app_mode) {
+		assert(!ad->pacing_pps);
+		switch (ad->app_mode) {
 		case 1: /* ping-pong */
 			__APP_PRINTF("server: ping-pong mode\n"); fflush(stdout);
-			assert(__app_payload_len);
+			assert(ad->payload_len);
 			break;
 		case 2: /* burst (ignore) */
 			__APP_PRINTF("server: burst mode (just ignore incoming data)\n"); fflush(stdout);
@@ -910,12 +938,12 @@ static void *__app_init(int argc, char *const *argv)
 			assert(0);
 			break;
 		}
-		__APP_PRINTF("server listens on %u, data len %u\n", ntohs(__app_l4_port_be), __app_payload_len); fflush(stdout);
+		__APP_PRINTF("server listens on %u, data len %u\n", ntohs(ad->l4_port_be), ad->payload_len); fflush(stdout);
 	}
 
 	signal(SIGINT, sig_h);
 
-	return NULL;
+	return (void *) ad;
 }
 
 #define M2S(s) _M2S(s)
