@@ -8,8 +8,6 @@ endif
 CFLAGS += -Werror -Wextra -Wall
 CFLAGS += -DIOSUB_MAIN_C=$(IOSUB_DIR)/main.c
 
-LDFLAGS += -lpthread
-
 OSNAME = $(shell uname -s)
 
 ifeq ($(OSNAME),Linux)
