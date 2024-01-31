@@ -1290,6 +1290,7 @@ static int __iosub_main(int argc, char *const *argv)
 		(void) __app_thread_init;
 		(void) __app_loop;
 		(void) __app_should_stop;
+		(void) __app_exit;
 	}
 	{ /* unused */
 		(void) iip_run;
