@@ -640,7 +640,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 }
 
 static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
-				void *tcp_opaque,
+				void *tcp_opaque, uint16_t head_off, uint16_t tail_off,
 				void *opaque)
 {
 	void **opaque_array = (void **) opaque;
@@ -650,7 +650,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 		{
 			uint8_t idx = td->monitor.idx;
 			__asm__ volatile ("" ::: "memory");
-			td->monitor.counter[idx].rx_bytes += PB_TCP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
+			td->monitor.counter[idx].rx_bytes += PB_TCP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque)) - head_off - tail_off;
 			td->monitor.counter[idx].rx_pkt++;
 		}
 		switch (ad->app_mode) {
