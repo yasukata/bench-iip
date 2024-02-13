@@ -207,7 +207,7 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 					l += iip_ops_pkt_get_len(m, opaque);
 					if (++cur == td->payload.cnt)
 						cur = 0;
-					assert(!iip_tcp_send(td->workspace, handle, m, opaque));
+					assert(!iip_tcp_send(td->workspace, handle, m, (i == cnt - 1 ? 0x08U /* PSH */ : 0), opaque));
 				}
 			}
 			if (ad->pacing_pps) {
