@@ -733,6 +733,617 @@ get average of 32 cores
 numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" -v numcore=$numcore 'BEGIN{ pcnt = 0; ipc = 0; missk = 0; util = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 + (32 - numcore) < pcnt) { ipc += $2; missk += $3; util += $4; }; pcnt += 1; }; } END{ print ipc / numcore ", " missk /numcore ", " util / numcore }'; numcore=$(($numcore+1)); done
 ```
 
+## performance numbers of other TCP/IP stacks
+
+We show rough performance numbers of other TCP/IP stacks.
+
+**CAUTION: Please note that it is impossible to conduct a fair comparison among TCP/IP stacks having different implementations, properties, and features. What we show here is an apples-to-oranges comparison, in other words, the results shown here do not indicate the superiority of the TCP/IP stack implementations.**
+
+We run benchmarks with the following TCP/IP stack implementations.
+
+- Linux
+- lwIP: [paper](https://www.usenix.org/conference/mobisys2003/full-tcpip-8-bit-architectures), [web page](https://www.nongnu.org/lwip)
+- Seastar: [web page](https://seastar.io/), [GitHub](https://github.com/scylladb/seastar)
+- F-Stack: [web page](https://www.f-stack.org/), [GitHub](https://github.com/F-Stack/f-stack)
+- TAS: [paper](https://dl.acm.org/doi/10.1145/3302424.3303985), [GitHub](https://github.com/tcp-acceleration-service/tas)
+- Caladan: [paper](https://www.usenix.org/conference/osdi20/presentation/fried), [GitHub](https://github.com/shenango/caladan)
+
+We run a simple TCP ping-pong workload that exchanges a 1-byte TCP message; for the benchmark server programs, we use example programs in the publicly available repositories of the TCP/IP stack implementations, and we use the bench-iip program as the client.
+
+We use the same machines [described above](#machines); one machine is for the server, and the other machine runs the client that is the bench-iip program.
+
+The server and client programs communicate over the 100 Gbps Mellanox NICs.
+
+### 1 CPU core server
+
+***client (iip)***
+
+- bench-iip: 4e98b9af786299ec44f79b2bf67c046a301075bd
+- iip: 0da3100f108f786d923e41acd84b6614082a72be
+- iip-dpdk: 9fd10fd9410dbc43ab487784f4cb72300199354b
+- Linux kernel 6.2 (Ubuntu 22.04)
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 0 -c 1 -d 1 -l 1
+```
+
+***Linux setup***
+
+- Linux kernel 6.2 (Ubuntu 22.04)
+- We use the same server implementation shown [above](#multi-core-server-performance).
+
+command to launch the benchmark server
+
+```
+./app -c 0 -g 1 -l 1 -p 10000
+```
+
+***lwIP setup***
+
+- https://github.com/yasukata/tinyhttpd-lwip-dpdk
+- a3e1ea3d3917554573024483fb159b73e8bc3aa5
+- Linux kernel 6.2 (Ubuntu 22.04)
+
+We change the program to always reply "A".
+
+```diff
+--- a/main.c
++++ b/main.c
+@@ -132,13 +132,11 @@ static err_t tcp_recv_handler(void *arg, struct tcp_pcb *tpcb,
+        if (!arg) { /* server mode */
+                char buf[4] = { 0 };
+                pbuf_copy_partial(p, buf, 3, 0);
+-               if (!strncmp(buf, "GET", 3)) {
+                        io_stat[0]++;
+                        io_stat[2] += httpdatalen;
+                        assert(tcp_sndbuf(tpcb) >= httpdatalen);
+                        assert(tcp_write(tpcb, httpbuf, httpdatalen, TCP_WRITE_FLAG_COPY) == ERR_OK);
+                        assert(tcp_output(tpcb) == ERR_OK);
+-               }
+        } else { /* client mode */
+                struct http_response *r = (struct http_response *) arg;
+                assert(p->tot_len < (sizeof(r->buf) - r->cur));
+@@ -385,7 +383,7 @@ int main(int argc, char *const *argv)
+                        assert((content = (char *) malloc(content_len + 1)) != NULL);
+                        memset(content, 'A', content_len);
+                        content[content_len] = '\0';
+-                       httpdatalen = snprintf(httpbuf, buflen, "HTTP/1.1 200 OK\r\nContent-Length: %lu\r\nConnection: keep-alive\r\n\r\n%s", content_len, content);
++                       httpdatalen = snprintf(httpbuf, buflen, "A");
+                        free(content);
+                        printf("http data length: %lu bytes\n", httpdatalen);
+                }
+```
+
+command to launch the benchmark server
+
+```
+sudo LD_LIBRARY_PATH=./dpdk/install/lib/x86_64-linux-gnu ./app -l 0 --proc-type=primary --file-prefix=pmd1 --allow=0000:17:00.0 -- -a 10.100.0.20 -g 10.100.0.10 -m 255.255.255.0 -l 1 -p 10000
+```
+
+***Seastar setup***
+
+- https://github.com/scylladb/seastar.git
+- 10b7d604d1f5037a733879d8d171d4405faebbe9
+- Linux kernel 6.2 (Ubuntu 22.04)
+
+A build-relevant file is changed to involve the mlx5 driver.
+
+```diff
+--- a/cmake/Finddpdk.cmake
++++ b/cmake/Finddpdk.cmake
+@@ -25,6 +25,7 @@ find_path (dpdk_INCLUDE_DIR
+   PATH_SUFFIXES dpdk)
+ 
+ find_library (dpdk_PMD_VMXNET3_UIO_LIBRARY rte_pmd_vmxnet3_uio)
++find_library (dpdk_PMD_MLX5_LIBRARY rte_pmd_mlx5)
+ find_library (dpdk_PMD_I40E_LIBRARY rte_pmd_i40e)
+ find_library (dpdk_PMD_IXGBE_LIBRARY rte_pmd_ixgbe)
+ find_library (dpdk_PMD_E1000_LIBRARY rte_pmd_e1000)
+@@ -58,6 +59,7 @@ include (FindPackageHandleStandardArgs)
+ set (dpdk_REQUIRED
+   dpdk_INCLUDE_DIR
+   dpdk_PMD_VMXNET3_UIO_LIBRARY
++  dpdk_PMD_MLX5_LIBRARY
+   dpdk_PMD_I40E_LIBRARY
+   dpdk_PMD_IXGBE_LIBRARY
+   dpdk_PMD_E1000_LIBRARY
+@@ -113,6 +115,7 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
+     ${dpdk_PMD_ENA_LIBRARY}
+     ${dpdk_PMD_ENIC_LIBRARY}
+     ${dpdk_PMD_QEDE_LIBRARY}
++       ${dpdk_PMD_MLX5_LIBRARY}
+     ${dpdk_PMD_I40E_LIBRARY}
+     ${dpdk_PMD_IXGBE_LIBRARY}
+     ${dpdk_PMD_NFP_LIBRARY}
+@@ -146,6 +149,17 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
+       IMPORTED_LOCATION ${dpdk_PMD_VMXNET3_UIO_LIBRARY}
+       INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
+ 
++  #
++  # pmd_mlx5
++  #
++
++  add_library (dpdk::pmd_mlx5 UNKNOWN IMPORTED)
++
++  set_target_properties (dpdk::pmd_mlx5
++    PROPERTIES
++      IMPORTED_LOCATION ${dpdk_PMD_MLX5_LIBRARY}
++      INTERFACE_INCLUDE_DIRECTORIES ${dpdk_INCLUDE_DIR})
++
+   #
+   # pmd_i40e
+   #
+@@ -468,6 +482,7 @@ if (dpdk_FOUND AND NOT (TARGET dpdk::dpdk))
+     dpdk::pmd_ena
+     dpdk::pmd_enic
+     dpdk::pmd_qede
++    dpdk::pmd_mlx5
+     dpdk::pmd_i40e
+     dpdk::pmd_ixgbe
+     dpdk::pmd_nfp
+```
+
+We modify the memcached application to use it as a simple TCP ping-pong server; after the change, the server always return "A" to a TCP message without running the memcached-specific event handler.
+
+```diff
+--- a/apps/memcached/memcache.cc
++++ b/apps/memcached/memcache.cc
+@@ -1042,6 +1042,13 @@ class ascii_protocol {
+     }
+ 
+     future<> handle(input_stream<char>& in, output_stream<char>& out) {
++               return in.read().then([this, &out] (temporary_buffer<char> buf) -> future<> {
++                               if (!buf.empty())
++                                       return out.write("A");
++                               else
++                                       return make_ready_future<>();
++               });
++
+         _parser.init();
+         return in.consume(_parser).then([this, &out] () -> future<> {
+             switch (_parser._state) {
+```
+
+In the file ```build/release/build.ninja```, ```-libverbs -lmlx5 -lmnl``` has to be added to ```LINK_LIBRARIES``` like as follows.
+
+```
+#############################################
+# Link the executable apps/memcached/memcached
+
+build apps/memcached/memcached: CXX_EXECUTABLE_LINKER__app_memcached_RelWithDebInfo apps/memcached/CMakeFiles/app_memcached.dir/memcache.cc.o | libseastar.a /usr/lib/x86_64-linux-gnu/libboost_program_options.so /usr/lib/x86_64-linux-gnu/libboost_thread.so /usr/lib/x86_64-linux-gnu/libboost_chrono.so /usr/lib/x86_64-linux-gnu/libboost_date_time.so /usr/lib/x86_64-linux-gnu/libboost_atomic.so /usr/lib/x86_64-linux-gnu/libcares.so /usr/lib/x86_64-linux-gnu/libcryptopp.so /usr/lib/x86_64-linux-gnu/libfmt.so.8.1.1 /usr/lib/x86_64-linux-gnu/liblz4.so /usr/lib/x86_64-linux-gnu/libgnutls.so /usr/lib/x86_64-linux-gnu/libsctp.so /usr/lib/x86_64-linux-gnu/libyaml-cpp.so _cooking/installed/lib/librte_cfgfile.a _cooking/installed/lib/librte_cmdline.a _cooking/installed/lib/librte_ethdev.a _cooking/installed/lib/librte_hash.a _cooking/installed/lib/librte_mbuf.a _cooking/installed/lib/librte_eal.a _cooking/installed/lib/librte_kvargs.a _cooking/installed/lib/librte_mempool.a _cooking/installed/lib/librte_mempool_ring.a _cooking/installed/lib/librte_pmd_bnxt.a _cooking/installed/lib/librte_pmd_cxgbe.a _cooking/installed/lib/librte_pmd_e1000.a _cooking/installed/lib/librte_pmd_ena.a _cooking/installed/lib/librte_pmd_enic.a _cooking/installed/lib/librte_pmd_qede.a _cooking/installed/lib/librte_pmd_mlx5.a _cooking/installed/lib/librte_pmd_i40e.a _cooking/installed/lib/librte_pmd_ixgbe.a _cooking/installed/lib/librte_pmd_nfp.a _cooking/installed/lib/librte_pmd_ring.a _cooking/installed/lib/librte_pmd_vmxnet3_uio.a _cooking/installed/lib/librte_ring.a _cooking/installed/lib/librte_net.a _cooking/installed/lib/librte_timer.a _cooking/installed/lib/librte_pci.a _cooking/installed/lib/librte_bus_pci.a _cooking/installed/lib/librte_bus_vdev.a _cooking/installed/lib/librte_pmd_fm10k.a _cooking/installed/lib/librte_pmd_sfc_efx.a /usr/lib/x86_64-linux-gnu/libhwloc.so /usr/lib/x86_64-linux-gnu/liburing.so /usr/lib/x86_64-linux-gnu/libnuma.so || apps/memcached/app_memcached_ascii libseastar.a
+  FLAGS = -O2 -g -DNDEBUG
+  #LINK_LIBRARIES = libseastar.a  /usr/lib/x86_64-linux-gnu/libboost_program_options.so  /usr/lib/x86_64-linux-gnu/libboost_thread.so  /usr/lib/x86_64-linux-gnu/libboost_chrono.so  /usr/lib/x86_64-linux-gnu/libboost_date_time.so  /usr/lib/x86_64-linux-gnu/libboost_atomic.so  /usr/lib/x86_64-linux-gnu/libcares.so  /usr/lib/x86_64-linux-gnu/libcryptopp.so  /usr/lib/x86_64-linux-gnu/libfmt.so.8.1.1  -Wl,--as-needed  /usr/lib/x86_64-linux-gnu/liblz4.so  -ldl  /usr/lib/x86_64-linux-gnu/libgnutls.so  -latomic  /usr/lib/x86_64-linux-gnu/libsctp.so  /usr/lib/x86_64-linux-gnu/libyaml-cpp.so  _cooking/installed/lib/librte_cfgfile.a  _cooking/installed/lib/librte_cmdline.a  _cooking/installed/lib/librte_ethdev.a  _cooking/installed/lib/librte_hash.a  _cooking/installed/lib/librte_mbuf.a  _cooking/installed/lib/librte_eal.a  _cooking/installed/lib/librte_kvargs.a  _cooking/installed/lib/librte_mempool.a  _cooking/installed/lib/librte_mempool_ring.a  _cooking/installed/lib/librte_pmd_bnxt.a  _cooking/installed/lib/librte_pmd_cxgbe.a  _cooking/installed/lib/librte_pmd_e1000.a  _cooking/installed/lib/librte_pmd_ena.a  _cooking/installed/lib/librte_pmd_enic.a  _cooking/installed/lib/librte_pmd_qede.a  _cooking/installed/lib/librte_pmd_mlx5.a  _cooking/installed/lib/librte_pmd_i40e.a  _cooking/installed/lib/librte_pmd_ixgbe.a  _cooking/installed/lib/librte_pmd_nfp.a  _cooking/installed/lib/librte_pmd_ring.a  _cooking/installed/lib/librte_pmd_vmxnet3_uio.a  _cooking/installed/lib/librte_ring.a  _cooking/installed/lib/librte_net.a  _cooking/installed/lib/librte_timer.a  _cooking/installed/lib/librte_pci.a  _cooking/installed/lib/librte_bus_pci.a  _cooking/installed/lib/librte_bus_vdev.a  _cooking/installed/lib/librte_pmd_fm10k.a  _cooking/installed/lib/librte_pmd_sfc_efx.a  /usr/lib/x86_64-linux-gnu/libhwloc.so  /usr/lib/x86_64-linux-gnu/liburing.so  /usr/lib/x86_64-linux-gnu/libnuma.so
+  LINK_LIBRARIES = libseastar.a  /usr/lib/x86_64-linux-gnu/libboost_program_options.so  /usr/lib/x86_64-linux-gnu/libboost_thread.so  /usr/lib/x86_64-linux-gnu/libboost_chrono.so  /usr/lib/x86_64-linux-gnu/libboost_date_time.so  /usr/lib/x86_64-linux-gnu/libboost_atomic.so  /usr/lib/x86_64-linux-gnu/libcares.so  /usr/lib/x86_64-linux-gnu/libcryptopp.so  /usr/lib/x86_64-linux-gnu/libfmt.so.8.1.1  -Wl,--as-needed  /usr/lib/x86_64-linux-gnu/liblz4.so  -ldl  -libverbs -lmlx5 -lmnl  /usr/lib/x86_64-linux-gnu/libgnutls.so  -latomic  /usr/lib/x86_64-linux-gnu/libsctp.so  /usr/lib/x86_64-linux-gnu/libyaml-cpp.so  _cooking/installed/lib/librte_cfgfile.a  _cooking/installed/lib/librte_cmdline.a  _cooking/installed/lib/librte_ethdev.a  _cooking/installed/lib/librte_hash.a  _cooking/installed/lib/librte_mbuf.a  _cooking/installed/lib/librte_eal.a  _cooking/installed/lib/librte_kvargs.a  _cooking/installed/lib/librte_mempool.a  _cooking/installed/lib/librte_mempool_ring.a  _cooking/installed/lib/librte_pmd_bnxt.a  _cooking/installed/lib/librte_pmd_cxgbe.a  _cooking/installed/lib/librte_pmd_e1000.a  _cooking/installed/lib/librte_pmd_ena.a  _cooking/installed/lib/librte_pmd_enic.a  _cooking/installed/lib/librte_pmd_qede.a  _cooking/installed/lib/librte_pmd_mlx5.a  _cooking/installed/lib/librte_pmd_i40e.a  _cooking/installed/lib/librte_pmd_ixgbe.a  _cooking/installed/lib/librte_pmd_nfp.a  _cooking/installed/lib/librte_pmd_ring.a  _cooking/installed/lib/librte_pmd_vmxnet3_uio.a  _cooking/installed/lib/librte_ring.a  _cooking/installed/lib/librte_net.a  _cooking/installed/lib/librte_timer.a  _cooking/installed/lib/librte_pci.a  _cooking/installed/lib/librte_bus_pci.a  _cooking/installed/lib/librte_bus_vdev.a  _cooking/installed/lib/librte_pmd_fm10k.a  _cooking/installed/lib/librte_pmd_sfc_efx.a  /usr/lib/x86_64-linux-gnu/libhwloc.so  /usr/lib/x86_64-linux-gnu/liburing.so  /usr/lib/x86_64-linux-gnu/libnuma.so
+  OBJECT_DIR = apps/memcached/CMakeFiles/app_memcached.dir
+  POST_BUILD = :
+  PRE_LINK = :
+  TARGET_FILE = apps/memcached/memcached
+  TARGET_PDB = memcached.dbg
+```
+
+command to launch the benchmark server
+
+```
+build/release/apps/memcached/memcached --network-stack native --dpdk-pmd --dhcp 0 --host-ipv4-addr 10.100.0.20 --netmask-ipv4-addr 255.255.255.0 --collectd 0 --smp 1 --port 10000
+```
+
+***F-Stack setup***
+
+- https://github.com/F-Stack/f-stack.git
+- 81b0219b097156693e6061ce215dc79687ef7f92
+- Linux kernel 6.2 (Ubuntu 22.04)
+
+The following is the change made to the configuration file.
+
+```diff
+--- a/config.ini
++++ b/config.ini
+@@ -33,13 +33,14 @@ idle_sleep=0
+ # if set 0, means send pkts immediately.
+ # if set >100, will dealy 100 us.
+ # unit: microseconds
+-pkt_tx_delay=100
++pkt_tx_delay=0
+
+ # use symmetric Receive-side Scaling(RSS) key, default: disabled.
+ symmetric_rss=0
+
+ # PCI device enable list.
+ # And driver options
++allow=17:00.0
+ #allow=02:00.0
+ # for multiple PCI devices
+ #allow=02:00.0,03:00.0
+@@ -85,10 +86,10 @@ savepath=.
+ # Port config section
+ # Correspond to dpdk.port_list's index: port0, port1...
+ [port0]
+-addr=192.168.1.2
++addr=10.100.0.20
+ netmask=255.255.255.0
+-broadcast=192.168.1.255
+-gateway=192.168.1.1
++broadcast=10.100.0.255
++gateway=10.100.0.10
+ # set interface name, Optional parameter.
+ #if_name=eno7
+```
+
+We changed an HTTP-server like example to always return "A" to incoming TCP messages.
+
+```diff
+--- a/example/main.c
++++ b/example/main.c
+@@ -26,37 +26,7 @@ int sockfd;
+ int sockfd6;
+ #endif
+
+-char html[] =
+-"HTTP/1.1 200 OK\r\n"
+-"Server: F-Stack\r\n"
+-"Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
+-"Content-Type: text/html\r\n"
+-"Content-Length: 438\r\n"
+-"Last-Modified: Tue, 21 Feb 2017 09:44:03 GMT\r\n"
+-"Connection: keep-alive\r\n"
+-"Accept-Ranges: bytes\r\n"
+-"\r\n"
+-"<!DOCTYPE html>\r\n"
+-"<html>\r\n"
+-"<head>\r\n"
+-"<title>Welcome to F-Stack!</title>\r\n"
+-"<style>\r\n"
+-"    body {  \r\n"
+-"        width: 35em;\r\n"
+-"        margin: 0 auto; \r\n"
+-"        font-family: Tahoma, Verdana, Arial, sans-serif;\r\n"
+-"    }\r\n"
+-"</style>\r\n"
+-"</head>\r\n"
+-"<body>\r\n"
+-"<h1>Welcome to F-Stack!</h1>\r\n"
+-"\r\n"
+-"<p>For online documentation and support please refer to\r\n"
+-"<a href=\"http://F-Stack.org/\">F-Stack.org</a>.<br/>\r\n"
+-"\r\n"
+-"<p><em>Thank you for using F-Stack.</em></p>\r\n"
+-"</body>\r\n"
+-"</html>";
++char html[] = "A";
+ 
+ int loop(void *arg)
+ {
+@@ -143,7 +113,7 @@ int main(int argc, char * argv[])
+     struct sockaddr_in my_addr;
+     bzero(&my_addr, sizeof(my_addr));
+     my_addr.sin_family = AF_INET;
+-    my_addr.sin_port = htons(80);
++    my_addr.sin_port = htons(10000);
+     my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+```
+
+command to launch the benchmark server
+
+```
+./example/helloworld
+```
+
+***TAS setup***
+
+- https://github.com/tcp-acceleration-service/tas.git
+- d3926baf6ad65211dc724206a8420715eb5ab645
+- Linux kernel 6.2 (Ubuntu 22.04)
+
+We remove ```-Werror``` and manipulate several path settings to pass the compilation.
+
+```diff
+--- a/Makefile
++++ b/Makefile
+@@ -5,15 +5,15 @@
+
+ CPPFLAGS += -Iinclude/
+ CPPFLAGS += $(EXTRA_CPPFLAGS)
+-CFLAGS += -std=gnu99 -O3 -g -Wall -Werror -march=native -fno-omit-frame-pointer
++CFLAGS += -std=gnu99 -O3 -g -Wall -march=native -fno-omit-frame-pointer
+ CFLAGS += $(EXTRA_CFLAGS)
+ CFLAGS_SHARED += $(CFLAGS) -fPIC
+ LDFLAGS += -pthread -g
+ LDFLAGS += $(EXTRA_LDFLAGS)
+-LDLIBS += -lm -lpthread -lrt -ldl
++LDLIBS += -lm -lpthread -lrt -ldl -lrte_kvargs
+ LDLIBS += $(EXTRA_LDLIBS)
+
+-PREFIX ?= /usr/local
++PREFIX ?= $(HOME)/dpdk-inst
+ SBINDIR ?= $(PREFIX)/sbin
+ LIBDIR ?= $(PREFIX)/lib
+ INCDIR ?= $(PREFIX)/include
+@@ -23,13 +23,13 @@ INCDIR ?= $(PREFIX)/include
+ # DPDK configuration
+
+ # Prefix for dpdk
+-RTE_SDK ?= /usr/
++RTE_SDK ?= $(HOME)/dpdk-inst
+ # mpdts to compile
+-DPDK_PMDS ?= ixgbe i40e tap virtio
++DPDK_PMDS ?= ixgbe i40e tap virtio mlx5
+
+ DPDK_CPPFLAGS += -I$(RTE_SDK)/include -I$(RTE_SDK)/include/dpdk \
+-  -I$(RTE_SDK)/include/x86_64-linux-gnu/dpdk/
+-DPDK_LDFLAGS+= -L$(RTE_SDK)/lib/
++  -I$(RTE_SDK)/include/x86_64-linux-gnu/dpdk/ -I$(RTE_SDK)/include/
++DPDK_LDFLAGS+= -L$(RTE_SDK)/lib/ -L/root/dpdk-inst/lib/x86_64-linux-gnu
+ DPDK_LDLIBS+= \
+   -Wl,--whole-archive \
+    $(addprefix -lrte_pmd_,$(DPDK_PMDS)) \
+```
+
+We replace ```pthread_yield``` with ```sched_yield``` because the compiler suggested.
+
+```diff
+--- a/lib/sockets/interpose.c
++++ b/lib/sockets/interpose.c
+@@ -779,7 +779,7 @@ static inline void ensure_init(void)
+       init_done = 1;
+     } else {
+       while (init_done == 0) {
+-        pthread_yield();
++        sched_yield();
+       }
+       MEM_BARRIER();
+     }
+```
+
+```diff
+--- a/lib/sockets/libc.c
++++ b/lib/sockets/libc.c
+@@ -150,7 +150,7 @@ static inline void ensure_init(void)
+       init_done = 1;
+     } else {
+       while (init_done == 0) {
+-        pthread_yield();
++        sched_yield();
+       }
+       MEM_BARRIER();
+     }
+```
+
+command to launch the service process of TAS
+
+```
+LD_LIBRARY_PATH=$HOME/dpdk-inst/lib/x86_64-linux-gnu ./tas/tas --ip-addr=10.100.0.20/24 --fp-cores-max=2
+```
+
+command to launch the benchmark server
+
+```
+./tests/bench_ll_echo 10000 1 64 128
+```
+
+***Caladan setup***
+
+- https://github.com/shenango/caladan.git
+- 1ab795053531dacf6bde366471a4439ae72313c4
+- Linux kernel 5.15 (Ubuntu 22.04)
+
+```diff
+--- a/apps/synthetic/src/main.rs
++++ b/apps/synthetic/src/main.rs
+@@ -1,4 +1,4 @@
+-#![feature(integer_atomics)]
++//#![feature(integer_atomics)]
+ #![feature(nll)]
+ #![feature(test)]
+ #[macro_use]
+```
+
+We changed the build config file to include the mlx5 NIC driver.
+
+The directpath optimization ```CONFIG_DIRECTPATH``` is not activated.
+
+```diff
+--- a/build/config
++++ b/build/config
+@@ -1,7 +1,7 @@
+ # build configuration options (set to y for "yes", n for "no")
+ 
+ # Enable Mellanox ConnectX-4,5 NIC Support
+-CONFIG_MLX5=n
++CONFIG_MLX5=y
+ # Enable Mellanox ConnectX-3 NIC Support
+ CONFIG_MLX4=n
+ # Enable SPDK NVMe support
+```
+
+The configuration file is edited as follows.
+
+```diff
+--- a/server.config
++++ b/server.config
+@@ -1,7 +1,6 @@
+-# an example runtime config file
+-host_addr 192.168.1.3
++host_addr 10.100.0.20
+ host_netmask 255.255.255.0
+-host_gateway 192.168.1.1
+-runtime_kthreads 4
+-runtime_guaranteed_kthreads 4
++host_gateway 10.100.0.10
++runtime_kthreads 1
++runtime_guaranteed_kthreads 1
+ runtime_priority lc
+```
+
+We change the port number that the servers listens on.
+
+```diff
+--- a/tests/netperf.c
++++ b/tests/netperf.c
+@@ -14,7 +14,7 @@
+ #include <runtime/sync.h>
+ #include <runtime/tcp.h>
+ 
+-#define NETPERF_PORT   8000
++#define NETPERF_PORT   10000
+ 
+ /* experiment parameters */
+ static struct netaddr raddr;
+```
+
+command to launch the process for Caladan's IOKernel
+
+```
+./iokerneld simple noht
+```
+
+command to launch the benchmark server
+
+```
+./tests/netperf ./server.config SERVER 1 10.100.0.20 0 1 1
+```
+
+***iip setup***
+
+- bench-iip: 4e98b9af786299ec44f79b2bf67c046a301075bd
+- iip: 0da3100f108f786d923e41acd84b6614082a72be
+- iip-dpdk: 9fd10fd9410dbc43ab487784f4cb72300199354b
+- Linux kernel 6.2 (Ubuntu 22.04)
+
+command to launch the benchmark server
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -l 1
+```
+
+***result***
+
+| system | throughput (requests/sec) | 99th percentile latency (us) |
+| ------------- | ------------- | ------------- |
+| Linux | 255872 | 160.381 |
+| lwIP | 2330425 | 14.188 |
+| Seastar | 1135152 | 30.286 |
+| F-Stack | 1368221 | 23.884 |
+| TAS | 2326537 | 18.610 |
+| Caladan | 2427353 | 17.263 |
+| iip | 2894734 | 15.314 |
+
+***note***
+
+TAS and Caladan use two CPU cores for this benchmark (TAS needs one CPU core for its service process, and Caladan also requires a dedicated CPU core for its scheduler), and the other cases use one CPU core.
+
+### 8 CPU core server
+
+***client (iip)***
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 0 -c 8 -d 1 -l 1
+```
+
+***Linux***
+
+```
+./app -c 0-7 -g 1 -l 1 -p 10000
+```
+
+***Seastar***
+
+```
+build/release/apps/memcached/memcached --network-stack native --dpdk-pmd --dhcp 0 --host-ipv4-addr 10.100.0.20 --netmask-ipv4-addr 255.255.255.0 --collectd 0 --smp 8 --port 10000
+```
+
+***Caladan setup***
+
+The file ```server.config``` is changed so that ```runtime_kthreads``` will be 8.
+
+```
+host_addr 10.100.0.20
+host_netmask 255.255.255.0
+host_gateway 10.100.0.10
+runtime_kthreads 8
+runtime_guaranteed_kthreads 8
+runtime_priority lc
+```
+
+command to launch the benchmark server
+
+```
+./tests/netperf ./server.config SERVER 0 10.100.0.20 0 1 1
+```
+
+***iip setup***
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-7 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -l 1
+```
+
+***result***
+
+| system | throughput (requests/sec) | 99th percentile latency (us) |
+| ------------- | ------------- | ------------- |
+| Linux | 1891960 | 304.695 |
+| Seastar | 8837323 | 39.769 |
+| Caladan | 9997752 | 50.033 |
+| iip | 22040945 | 16.538 |
+
+***note***
+
+Caladan uses 9 CPU cores for this benchmark (Caladan requires a dedicated CPU core for its scheduler), and the other cases use 8 CPU core.
+
+### 32 CPU core server
+
+***client (iip)***
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 0 -c 32 -d 1 -l 1
+```
+
+***Linux setup***
+
+```
+./app -c 0-31 -g 1 -l 1 -p 10000
+```
+
+***Seastar setup***
+
+```
+build/release/apps/memcached/memcached --network-stack native --dpdk-pmd --dhcp 0 --host-ipv4-addr 10.100.0.20 --netmask-ipv4-addr 255.255.255.0 --collectd 0 --smp 32 --port 10000
+```
+
+***iip setup***
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -l 1
+```
+
+***result***
+
+| system | throughput (requests/sec) | 99th percentile latency (us) |
+| ------------- | ------------- | ------------- |
+| Linux | 4809453 | 528.557 |
+| Seastar | 29381169 | 53.341 |
+| iip | 71007462 | 21.247 |
+
+***note***
+
+In our environment, 14 was the maximum number specified for ```runtime_kthreads```.
+
+```
+host_addr 10.100.0.20
+host_netmask 255.255.255.0
+host_gateway 10.100.0.10
+runtime_kthreads 14
+runtime_guaranteed_kthreads 14
+runtime_priority lc
+```
+
+The client is launched by the following command.
+
+```
+sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 0 -c 14 -d 1 -l 1
+```
+
+Caladan's throughput with this 14 ```runtime_kthreads``` setup was  9708941 requests/sec and its 99th percentile latency was 72.881 us.
+
 # appendix
 
 ## AF_XDP-based backend
