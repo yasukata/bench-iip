@@ -75,7 +75,11 @@ static void __debug_printf(const char *format, ...)
 #define IIP_OPS_DEBUG_PRINTF __debug_printf
 #endif
 
-#include "iip/main.c"
+#ifndef IIP_MAIN_C
+#define IIP_MAIN_C "iip/main.c"
+#endif
+
+#include IIP_MAIN_C
 
 #if !defined(APP_IIP_OPS_UTIL_NOW_NS_NONE)
 static void iip_ops_util_now_ns(uint32_t t[3], void *opaque)
