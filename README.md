@@ -733,6 +733,1105 @@ get average of 32 cores
 numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" -v numcore=$numcore 'BEGIN{ pcnt = 0; ipc = 0; missk = 0; util = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 + (32 - numcore) < pcnt) { ipc += $2; missk += $3; util += $4; }; pcnt += 1; }; } END{ print ipc / numcore ", " missk /numcore ", " util / numcore }'; numcore=$(($numcore+1)); done
 ```
 
+## separate threads for networking and app logic
+
+Please save the following program as ```bench-iip/sub/main.c```.
+
+```
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#define __app_exit	    __o__app_exit
+#define __app_should_stop   __o__app_should_stop
+#define __app_loop	    __o__app_loop
+#define __app_thread_init   __o__app_thread_init
+#define __app_init	    __o__app_init
+
+#pragma push_macro("IOSUB_MAIN_C")
+#undef IOSUB_MAIN_C
+#define IOSUB_MAIN_C pthread.h
+
+static int __iosub_main(int argc, char *const *argv);
+
+#define IIP_MAIN_C "./iip_main.c"
+
+#include "../main.c"
+
+#undef IOSUB_MAIN_C
+#pragma pop_macro("IOSUB_MAIN_C")
+
+#undef __app_init
+#undef __app_thread_init
+#undef __app_loop
+#undef __app_should_stop
+#undef __app_exit
+
+#undef iip_ops_pkt_alloc
+#undef iip_ops_pkt_free
+#undef iip_ops_pkt_get_data
+#undef iip_ops_pkt_get_len
+#undef iip_ops_pkt_set_len
+#undef iip_ops_pkt_increment_head
+#undef iip_ops_pkt_decrement_tail
+#undef iip_ops_pkt_clone
+#undef iip_ops_pkt_scatter_gather_chain_append
+#undef iip_ops_pkt_scatter_gather_chain_get_next
+
+#undef iip_ops_arp_reply
+#undef iip_ops_icmp_reply
+#undef iip_ops_tcp_accept
+#undef iip_ops_tcp_accepted
+#undef iip_ops_tcp_connected
+#undef iip_ops_tcp_payload
+#undef iip_ops_tcp_acked
+#undef iip_ops_tcp_closed
+#undef iip_ops_udp_payload
+
+#include <stdatomic.h>
+#include <pthread.h>
+
+#define SUB_MAX_CORE (128)
+#define NUM_IO_PKT_POLL (256)
+#define NUM_OP_SLOT (512)
+
+enum {
+	OP_ARP_REPLY = 1,
+	OP_ICMP_REPLY,
+	OP_TCP_ACCEPT,
+	OP_TCP_ACCEPTED,
+	OP_TCP_CONNECTED,
+	OP_TCP_PAYLOAD,
+	OP_TCP_ACKED,
+	OP_TCP_CLOSED,
+	OP_UDP_PAYLOAD,
+	DO_ARP_REQUEST,
+	DO_TCP_SEND,
+	DO_TCP_CLOSE,
+#if 0
+	DO_TCP_RXBUF_CONSUMED,
+#endif
+	DO_TCP_CONNECT,
+	DO_UDP_SEND,
+	/* extra */
+	OP_ADD_IO_PKT,
+	DO_PKT_FREE,
+	DO_PKT_ALLOC,
+};
+
+struct __s_bufhead {
+	uint64_t ref;
+};
+
+struct __spb {
+	uint64_t addr;
+	uint16_t len;
+	uint16_t head;
+	uint32_t flags;
+	void *pkt;
+	struct __spb *next[2];
+	struct __spb *prev[2];
+};
+
+#define SUB_READY	(1U << 1)
+#define SUB_SHOULD_STOP	(1U << 2)
+
+struct sub_data {
+	void *workspace;
+	void *opaque_array[5];
+	volatile uint16_t flags;
+	uint16_t th_id;
+	uint16_t core_id;
+	pthread_t th;
+	uint8_t mac[IIP_CONF_L2ADDR_LEN_MAX];
+	uint32_t ip4_be;
+	struct {
+		uint32_t free_cnt;
+		void *b[NUM_IO_PKT_POLL];
+		struct {
+			struct __spb *p[1][2];
+		} pool;
+	} io;
+	struct {
+		volatile uint16_t head;
+		volatile uint16_t tail;
+		struct {
+			uint64_t op;
+			uint64_t arg[9];
+			uint8_t mac[2][IIP_CONF_L2ADDR_LEN_MAX];
+		} slot[NUM_OP_SLOT];
+	} opq[2];
+};
+
+struct sub_app_global_data {
+	uint16_t num_cores;
+	uint16_t num_io_threads; /* XXX: this is not great but needed to avoid adding an interface to io subsystems */
+	void *app_global_opaque;
+	struct sub_data sd[SUB_MAX_CORE];
+};
+
+static void sub_io_buf_add(void *pkt, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	__iip_assert(pkt);
+	sd->io.b[sd->io.free_cnt++] = pkt;
+}
+
+static void __m__iip_buf_free(void *pkt, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	if (((struct __spb *) pkt)->flags & (1UL << 1) || --((struct __s_bufhead *) ((struct __spb *) pkt)->addr)->ref == 0) {
+		uint16_t h = sd->opq[1].head;
+		while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+		sd->opq[1].slot[h].op = DO_PKT_FREE;
+		sd->opq[1].slot[h].arg[0] = (uint64_t) ((struct __spb *) pkt)->pkt;
+		sd->opq[1].slot[h].arg[1] = 0; /* opaque */
+		__asm__ volatile("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	}
+}
+
+static void *__m__iip_buf_alloc(void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	if (!sd->io.free_cnt) {
+		uint16_t i;
+		for (i = 0; i < NUM_IO_PKT_POLL / 2; i++) {
+			uint16_t h = sd->opq[1].head;
+			while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+			sd->opq[1].slot[h].op = DO_PKT_ALLOC;
+			__asm__ volatile("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+			while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+			sub_io_buf_add((void *) sd->opq[1].slot[h].op, opaque);
+		}
+	}
+	return sd->io.b[--sd->io.free_cnt];
+}
+
+static void *__m__iip_ops_pkt_alloc(void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	{
+		struct __spb *p = sd->io.pool.p[0][0];
+		assert(p);
+		__iip_dequeue_obj(sd->io.pool.p[0], p, 0);
+		return (void *) p;
+	}
+}
+
+static void __m__iip_pkt_free(void *pkt, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	memset(pkt, 0, sizeof(struct __spb));
+#define __iip_enqueue_obj_top(__queue, __obj, __x) \
+	do { \
+		(__obj)->prev[__x] = (__obj)->next[__x] = NULL; \
+		if (!((__queue)[0])) { \
+			(__queue)[0] = (__queue)[1] = (__obj); \
+		} else { \
+			(__queue)[0]->prev[__x] = (__obj); \
+			(__obj)->next[__x] = (__queue)[0]; \
+			(__queue)[0] = (__obj); \
+		} \
+	} while (0)
+	__iip_enqueue_obj(sd->io.pool.p[0], (struct __spb *) pkt, 0);
+#undef __iip_enqueue_obj_top
+}
+
+static void *__m_iip_ops_pkt_alloc(void *opaque)
+{
+	struct __spb *p = __m__iip_ops_pkt_alloc(opaque);
+	assert(p);
+	p->pkt = __m__iip_buf_alloc(opaque);
+	assert(p->pkt);
+	p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+	((struct __s_bufhead *)((uintptr_t) p->addr))->ref = 1;
+	p->head = sizeof(struct __s_bufhead);
+	p->len = 0;
+	return p;
+}
+
+static void __m_iip_ops_pkt_free(void *pkt, void *opaque)
+{
+	assert(pkt);
+	__m__iip_buf_free(pkt, opaque);
+	__m__iip_pkt_free(pkt, opaque);
+}
+
+static void *__m_iip_ops_pkt_get_data(void *pkt, void *opaque)
+{
+	return (void *) (((struct __spb *) pkt)->addr + ((struct __spb *) pkt)->head);
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint16_t __m_iip_ops_pkt_get_len(void *pkt, void *opaque)
+{
+	return ((struct __spb *) pkt)->len;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void __m_iip_ops_pkt_set_len(void *pkt, uint16_t len, void *opaque)
+{
+	assert(pkt);
+	((struct __spb *) pkt)->len = len;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void __m_iip_ops_pkt_increment_head(void *pkt, uint16_t len, void *opaque)
+{
+	assert(pkt);
+	assert(len <= ((struct __spb *) pkt)->len);
+	((struct __spb *) pkt)->head += len;
+	((struct __spb *) pkt)->len -= len;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void __m_iip_ops_pkt_decrement_tail(void *pkt, uint16_t len, void *opaque)
+{
+	assert(pkt);
+	assert(len <= ((struct __spb *) pkt)->len);
+	((struct __spb *) pkt)->len -= len;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void *__m_iip_ops_pkt_clone(void *pkt, void *opaque)
+{
+	assert(((struct __s_bufhead *) ((struct __spb *) pkt)->addr)->ref);
+	{
+		struct __spb *p = __m__iip_ops_pkt_alloc(opaque);
+		__iip_assert(p);
+		p->addr = ((struct __spb *) pkt)->addr;
+		p->len = ((struct __spb *) pkt)->len;
+		p->head = ((struct __spb *) pkt)->head;
+		p->pkt = ((struct __spb *) pkt)->pkt;
+		((struct __s_bufhead *) ((struct __spb *) pkt)->addr)->ref++;
+		return p;
+	}
+}
+
+static void __m_iip_ops_pkt_scatter_gather_chain_append(void *pkt_head, void *pkt_tail, void *opaque)
+{
+	struct __spb *p = (struct __spb *) pkt_head;
+	while (p->next[1])
+		p = p->next[1];
+	p->next[1] = pkt_tail;
+	((struct __spb *) pkt_tail)->next[1] = NULL;
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static void *__m_iip_ops_pkt_scatter_gather_chain_get_next(void *pkt_head, void *opaque)
+{
+	return ((struct __spb *) pkt_head)->next[0];
+	{ /* unused */
+		(void) opaque;
+	}
+}
+
+static uint16_t iip_udp_send(void *_mem,
+			     uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
+			     uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
+			     void *pkt, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	uint16_t h = sd->opq[1].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+	sd->opq[1].slot[h].op = DO_UDP_SEND;
+	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[h].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[h].arg[2] = (uint64_t) local_ip4_be;
+	sd->opq[1].slot[h].arg[3] = (uint64_t) local_port_be;
+	sd->opq[0].slot[h].arg[4] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[h].arg[5] = (uint64_t) peer_ip4_be;
+	sd->opq[1].slot[h].arg[6] = (uint64_t) peer_port_be;
+	sd->opq[1].slot[h].arg[7] = (uint64_t) ((struct __spb *) pkt)->pkt;
+	sd->opq[1].slot[h].arg[8] = 0; /* opaque */
+	iip_ops_pkt_free(pkt, opaque);
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	return 0; /* XXX: assuming always 0 is returned */
+}
+
+static uint16_t iip_tcp_connect(void *_mem,
+				uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
+				uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
+				void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	uint16_t h = sd->opq[1].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+	sd->opq[1].slot[h].op = DO_TCP_CONNECT;
+	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[h].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[h].arg[2] = (uint64_t) local_ip4_be;
+	sd->opq[1].slot[h].arg[3] = (uint64_t) local_port_be;
+	sd->opq[0].slot[h].arg[4] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[h].arg[5] = (uint64_t) peer_ip4_be;
+	sd->opq[1].slot[h].arg[6] = (uint64_t) peer_port_be;
+	sd->opq[1].slot[h].arg[7] = 0; /* opaque */
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	return 0; /* XXX: assuming always 0 is returned */
+}
+
+static void iip_tcp_rxbuf_consumed(void *_mem, void *_handle, uint16_t cnt, void *opaque)
+{
+#if 0
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	uint16_t h = sd->opq[1].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("waiting %u %u", h, sd->opq[1].tail); }
+	sd->opq[1].slot[h].op = DO_TCP_RXBUF_CONSUMED;
+	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[1].slot[h].arg[1] = (uint64_t) _handle;
+	sd->opq[1].slot[h].arg[2] = (uint64_t) cnt;
+	sd->opq[1].slot[h].arg[3] = 0; /* opaque */
+	h = (h == NUM_OP_SLOT - 1 ? 0 : h + 1);
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[1].head, h, memory_order_release);
+#endif
+	{
+		(void) _mem;
+		(void) _handle;
+		(void) cnt;
+		(void) opaque;
+	}
+}
+
+static uint16_t iip_tcp_close(void *_mem, void *_handle, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	uint16_t h = sd->opq[1].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+	sd->opq[1].slot[h].op = DO_TCP_CLOSE;
+	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[1].slot[h].arg[1] = (uint64_t) _handle;
+	sd->opq[1].slot[h].arg[2] = 0; /* opaque */
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	return 0; /* XXX: assuming always 0 is returned */
+}
+
+static uint16_t iip_tcp_send(void *_mem, void *_handle, void *pkt, uint16_t tcp_flags, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	uint16_t h = sd->opq[1].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+	sd->opq[1].slot[h].op = DO_TCP_SEND;
+	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[1].slot[h].arg[1] = (uint64_t) _handle;
+	sd->opq[1].slot[h].arg[2] = (uint64_t) ((struct __spb *) pkt)->pkt;
+	sd->opq[1].slot[h].arg[3] = (uint64_t) tcp_flags;
+	sd->opq[1].slot[h].arg[4] = 0; /* opaque */
+	sd->opq[1].slot[h].arg[5] = ((struct __spb *) pkt)->len;
+	sd->opq[1].slot[h].arg[6] = ((struct __spb *) pkt)->head;
+	__m_iip_ops_pkt_free(pkt, opaque);
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	return 0; /* XXX: assuming always 0 is returned */
+}
+
+static void iip_arp_request(void *_mem,
+			    uint8_t local_mac[],
+			    uint32_t local_ip4_be,
+			    uint32_t target_ip4_be,
+			    void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_data *sd = (struct sub_data *) opaque_array[4];
+	uint16_t h = sd->opq[1].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
+	sd->opq[1].slot[h].op = DO_ARP_REQUEST;
+	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[h].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[h].arg[2] = (uint64_t) local_ip4_be;
+	sd->opq[1].slot[h].arg[3] = (uint64_t) target_ip4_be;
+	sd->opq[1].slot[h].arg[4] = 0; /* opaque */
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+}
+
+static void *app_sub_thread(void *data)
+{
+	struct sub_data *sd = (struct sub_data *) data;
+	while (!(sd->flags & SUB_READY)) { }
+	IIP_OPS_DEBUG_PRINTF("start sub thread %u on core %u\n", sd->th_id, sd->core_id);
+	{
+		uint16_t i;
+		for (i = 0; i < NUM_IO_PKT_POLL * 2; i++) {
+			struct __spb *p = (struct __spb *) mem_alloc_local(sizeof(struct __spb));
+			__iip_memset(p, 0, sizeof(struct __spb));
+			__iip_enqueue_obj(sd->io.pool.p[0], p, 0);
+		}
+	}
+	{
+		sd->opaque_array[0] = NULL;
+		sd->opaque_array[1] = (void *) ((struct sub_app_global_data *) sd->opaque_array[3])->app_global_opaque;
+		sd->opaque_array[2] = __o__app_thread_init(NULL, sd->th_id, sd->opaque_array);
+	}
+	while (!(sd->flags & SUB_SHOULD_STOP)) {
+		{
+			uint16_t h = atomic_load_explicit(&sd->opq[0].head, memory_order_acquire), t = sd->opq[0].tail;
+			while (h != t) {
+				switch (sd->opq[0].slot[t].op) {
+				case OP_ARP_REPLY:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[1];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						__o_iip_ops_arp_reply((void *) sd->opq[0].slot[t].arg[0], (void *) p, (void *) sd->opq[0].slot[t].arg[2]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_ICMP_REPLY:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[1];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						__o_iip_ops_arp_reply((void *) sd->opq[0].slot[t].arg[0], (void *) p, (void *) sd->opq[0].slot[t].arg[2]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_TCP_ACCEPT:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[1];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						sd->opq[0].slot[t].op = (uint64_t) __o_iip_ops_tcp_accept((void *) sd->opq[0].slot[t].arg[0], (void *) p, (void *) sd->opq[0].slot[t].arg[2]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_TCP_ACCEPTED:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[2];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						sd->opq[0].slot[t].op = (uint64_t) __o_iip_ops_tcp_accepted((void *) sd->opq[0].slot[t].arg[0], (void *) sd->opq[0].slot[t].arg[1], (void *) p, (void *) sd->opq[0].slot[t].arg[3]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_TCP_CONNECTED:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[2];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						sd->opq[0].slot[t].op = (uint64_t) __o_iip_ops_tcp_connected((void *) sd->opq[0].slot[t].arg[0], (void *) sd->opq[0].slot[t].arg[1], (void *) p, (void *) sd->opq[0].slot[t].arg[3]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_TCP_PAYLOAD:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[2];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						__o_iip_ops_tcp_payload((void *) sd->opq[0].slot[t].arg[0], (void *) sd->opq[0].slot[t].arg[1], (void *) p, (void *) sd->opq[0].slot[t].arg[3], sd->opq[0].slot[t].arg[4], sd->opq[0].slot[t].arg[5], (void *) sd->opq[0].slot[t].arg[6]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_TCP_ACKED:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[2];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						__o_iip_ops_tcp_acked((void *) sd->opq[0].slot[t].arg[0], (void *) sd->opq[0].slot[t].arg[1], (void *) p, (void *) sd->opq[0].slot[t].arg[3], (void *) sd->opq[0].slot[t].arg[4]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				case OP_TCP_CLOSED:
+					__o_iip_ops_tcp_closed((void *) sd->opq[0].slot[t].arg[0], (void *) sd->opq[0].slot[t].mac[0], sd->opq[0].slot[t].arg[2], sd->opq[0].slot[t].arg[3], (void *) sd->opq[0].slot[t].mac[1], sd->opq[0].slot[t].arg[5], sd->opq[0].slot[t].arg[6], (void *) sd->opq[0].slot[t].arg[7], (void *) sd->opq[0].slot[t].arg[8]);
+					break;
+				case OP_UDP_PAYLOAD:
+					{
+						struct __spb *p = __m__iip_ops_pkt_alloc(sd->opaque_array);
+						assert(p);
+						p->flags |= (1UL << 1);
+						p->pkt = (void *) sd->opq[0].slot[t].arg[1];
+						p->head = 0;
+						p->addr = (uint64_t) iip_ops_pkt_get_data(p->pkt, NULL /* FIXME */);
+						__o_iip_ops_udp_payload((void *) sd->opq[0].slot[t].arg[0], (void *) p, (void *) sd->opq[0].slot[t].arg[2]);
+						__m_iip_ops_pkt_free(p, sd->opaque_array);
+					}
+					break;
+				default:
+					assert(0);
+					break;
+				}
+				t = (t == NUM_OP_SLOT - 1 ? 0 : t + 1);
+			}
+			if (t != sd->opq[0].tail) {
+				__asm__ volatile("" ::: "memory");
+				atomic_store_explicit(&sd->opq[0].tail, t, memory_order_release);
+			}
+		}
+		{
+			uint32_t _next_us;
+			__o__app_loop(sd->workspace, sd->mac, sd->ip4_be, &_next_us, sd->opaque_array);
+		}
+	}
+	pthread_exit(NULL);
+}
+
+static void iip_ops_arp_reply(void *_mem, void *m, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_ARP_REPLY;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[1]);
+	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+}
+
+static void iip_ops_icmp_reply(void *_mem, void *m, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_ICMP_REPLY;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[1]);
+	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+}
+
+static uint8_t iip_ops_tcp_accept(void *mem, void *m, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_TCP_ACCEPT;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[1]);
+	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
+	return (uint8_t) sd->opq[0].slot[h].op;
+}
+
+static void *iip_ops_tcp_accepted(void *mem, void *handle, void *m, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_TCP_ACCEPTED;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[2]);
+	sd->opq[0].slot[h].arg[3] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
+	return (void *) sd->opq[0].slot[h].op;
+}
+
+static void *iip_ops_tcp_connected(void *mem, void *handle, void *m, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_TCP_CONNECTED;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[2]);
+	sd->opq[0].slot[h].arg[3] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
+	return (void *) sd->opq[0].slot[h].op;
+}
+
+static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
+				void *tcp_opaque, uint16_t head_off, uint16_t tail_off,
+				void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_TCP_PAYLOAD;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[2]);
+	sd->opq[0].slot[h].arg[3] = (uint64_t) tcp_opaque;
+	sd->opq[0].slot[h].arg[4] = (uint64_t) head_off;
+	sd->opq[0].slot[h].arg[5] = (uint64_t) tail_off;
+	sd->opq[0].slot[h].arg[6] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	__o_iip_tcp_rxbuf_consumed(mem, handle, 1, opaque);
+}
+
+static void iip_ops_tcp_acked(void *mem,
+			      void *handle,
+			      void *m,
+			      void *tcp_opaque,
+			      void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_TCP_ACKED;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[2]);
+	sd->opq[0].slot[h].arg[3] = (uint64_t) tcp_opaque;
+	sd->opq[0].slot[h].arg[4] = (uint64_t) sd->opaque_array;
+	h = (h == NUM_OP_SLOT - 1 ? 0 : h + 1);
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, h, memory_order_release);
+}
+
+static void iip_ops_tcp_closed(void *handle,
+			       uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
+			       uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
+			       void *tcp_opaque, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((peer_ip4_be + peer_port_be + local_port_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_TCP_CLOSED;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) handle;
+	sd->opq[0].slot[h].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[0].slot[h].arg[2] = local_ip4_be;
+	sd->opq[0].slot[h].arg[3] = local_port_be;
+	sd->opq[0].slot[h].arg[4] = 0;
+	__iip_memcpy(sd->opq[0].slot[h].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[0].slot[h].arg[5] = peer_ip4_be;
+	sd->opq[0].slot[h].arg[6] = peer_port_be;
+	sd->opq[0].slot[h].arg[7] = (uint64_t) tcp_opaque;
+	sd->opq[0].slot[h].arg[8] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+}
+
+static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
+	uint16_t h = sd->opq[0].head;
+	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
+	sd->opq[0].slot[h].op = OP_UDP_PAYLOAD;
+	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[h].arg[1]);
+	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
+	__asm__ volatile("" ::: "memory");
+	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+}
+
+static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = opaque_array[1];
+	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
+	if (!(sa->sd[core_id].flags & SUB_READY)) {
+		uint16_t i;
+		for (i = 0; i < sa->num_cores; i++) {
+			if (core_id == i % sa->num_io_threads) {
+				__iip_memcpy(sa->sd[i].mac, mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+				sa->sd[i].ip4_be = ip4_be;
+			}
+		}
+		__asm__ volatile("" ::: "memory");
+		for (i = 0; i < sa->num_cores; i++) {
+			if (core_id == i % sa->num_io_threads)
+				sa->sd[i].flags |= SUB_READY;
+		}
+	}
+	{
+		uint16_t i;
+		for (i = 0; i < sa->num_cores; i++) {
+			if (core_id == i % sa->num_io_threads) {
+				uint16_t h = atomic_load_explicit(&sa->sd[i].opq[1].head, memory_order_acquire), t = sa->sd[i].opq[1].tail;
+				while (h != t) {
+					switch (sa->sd[i].opq[1].slot[t].op) {
+					case DO_ARP_REQUEST:
+						__o_iip_arp_request((void *) sa->sd[i].opq[1].slot[t].arg[0], (void *) sa->sd[i].opq[1].slot[t].mac[0], sa->sd[i].opq[1].slot[t].arg[2], sa->sd[i].opq[1].slot[t].arg[3], opaque);
+						break;
+					case DO_TCP_SEND:
+						{
+							void *pkt = iip_ops_pkt_clone((void *) sa->sd[i].opq[1].slot[t].arg[2], opaque);
+							__iip_assert(pkt);
+							iip_ops_pkt_set_len(pkt, sa->sd[i].opq[1].slot[t].arg[5] + sa->sd[i].opq[1].slot[t].arg[6], opaque);
+							iip_ops_pkt_increment_head(pkt, sa->sd[i].opq[1].slot[t].arg[6], opaque);
+							sa->sd[i].opq[1].slot[t].op = __o_iip_tcp_send((void *) sa->sd[i].opq[1].slot[t].arg[0], (void *) sa->sd[i].opq[1].slot[t].arg[1], pkt, sa->sd[i].opq[1].slot[t].arg[3], opaque);
+						}
+						break;
+					case DO_TCP_CLOSE:
+						sa->sd[i].opq[1].slot[t].op = __o_iip_tcp_close((void *) sa->sd[i].opq[1].slot[t].arg[0], (void *) sa->sd[i].opq[1].slot[t].arg[1], opaque);
+						break;
+#if 0
+					case DO_TCP_RXBUF_CONSUMED:
+						__o_iip_tcp_rxbuf_consumed((void *) sa->sd[i].opq[1].slot[t].arg[0], (void *) sa->sd[i].opq[1].slot[t].arg[1], sa->sd[i].opq[1].slot[t].arg[2], opaque);
+						break;
+#endif
+					case DO_TCP_CONNECT:
+						sa->sd[i].opq[1].slot[t].op = __o_iip_tcp_connect((void *) sa->sd[i].opq[1].slot[t].arg[0], (void *) sa->sd[i].opq[1].slot[t].mac[0], sa->sd[i].opq[1].slot[t].arg[2], sa->sd[i].opq[1].slot[t].arg[3], (void *) sa->sd[i].opq[1].slot[t].mac[1], sa->sd[i].opq[1].slot[t].arg[5], sa->sd[i].opq[1].slot[t].arg[6], opaque);
+						break;
+					case DO_UDP_SEND:
+						{
+							void *pkt = iip_ops_pkt_clone((void *) sa->sd[i].opq[1].slot[t].arg[7], (void *) sa->sd[i].opq[1].slot[t].arg[8]);
+							__iip_assert(pkt);
+							sa->sd[i].opq[1].slot[t].op = __o_iip_udp_send((void *) sa->sd[i].opq[1].slot[t].arg[0], (void *) sa->sd[i].opq[1].slot[t].mac[0], sa->sd[i].opq[1].slot[t].arg[2], sa->sd[i].opq[1].slot[t].arg[3], (void *) sa->sd[i].opq[1].slot[t].mac[1], sa->sd[i].opq[1].slot[t].arg[5], sa->sd[i].opq[1].slot[t].arg[6], pkt, opaque);
+						}
+						break;
+					case DO_PKT_ALLOC:
+						sa->sd[i].opq[1].slot[t].op = (uint64_t) iip_ops_pkt_alloc(opaque);
+						__iip_assert(sa->sd[i].opq[1].slot[t].op);
+						break;
+					case DO_PKT_FREE:
+						iip_ops_pkt_free((void *) sa->sd[i].opq[1].slot[t].arg[0], opaque);
+						break;
+					default:
+						assert(0);
+						break;
+					}
+					t = (t == NUM_OP_SLOT - 1 ? 0 : t + 1);
+				}
+				if (t != sa->sd[i].opq[1].tail) {
+					__asm__ volatile("" ::: "memory");
+					atomic_store_explicit(&sa->sd[i].opq[1].tail, t, memory_order_release);
+				}
+			}
+		}
+	}
+	*next_us = 100;
+	{ /* unused */
+		(void) mem;
+	}
+}
+
+static void __app_exit(void *app_global_opaque)
+{
+	if (app_global_opaque) {
+		struct sub_app_global_data *sa = (struct sub_app_global_data *) app_global_opaque;
+		{
+			uint16_t i;
+			for (i = 0; i < sa->num_cores; i++)
+				sa->sd[i].flags |= SUB_SHOULD_STOP;
+		}
+		{
+			uint16_t i;
+			for (i = 0; i < sa->num_cores; i++)
+				__iip_assert(!pthread_join(sa->sd[i].th, NULL));
+		}
+		if (sa->app_global_opaque)
+			__o__app_exit(sa->app_global_opaque);
+		mem_free(app_global_opaque, sizeof(struct sub_app_global_data));
+	}
+}
+
+static uint8_t __app_should_stop(void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = (struct sub_app_global_data *) opaque_array[1];
+	if (sa->sd[0].opaque_array[2])
+		return __o__app_should_stop(sa->sd[0].opaque_array);
+	else
+		return 0;
+}
+
+static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct sub_app_global_data *sa = (struct sub_app_global_data *) opaque_array[1];
+	{
+		uint16_t i;
+		for (i = 0; i < sa->num_cores; i++) {
+			if (core_id == i % sa->num_io_threads)
+				sa->sd[i].workspace = workspace;
+		}
+	}
+	return (void *)((uintptr_t) core_id);
+}
+
+static void *__app_init(int argc, char *const *argv)
+{
+	struct sub_app_global_data *sa = (struct sub_app_global_data *) mem_alloc_local(sizeof(struct sub_app_global_data));
+	memset(sa, 0, sizeof(struct sub_app_global_data));
+	sa->app_global_opaque = __o__app_init(argc, argv);
+	{ /* parse arguments */
+		int ch;
+		while ((ch = getopt(argc, argv, "c:n:")) != -1) {
+			switch (ch) {
+			case 'c':
+				{
+					ssize_t num_comma = 0, num_hyphen = 0;
+					{
+						size_t i;
+						for (i = 0; i < strlen(optarg); i++) {
+							switch (optarg[i]) {
+								case ',':
+									num_comma++;
+									break;
+								case '-':
+									num_hyphen++;
+									break;
+							}
+						}
+					}
+					if (num_hyphen) {
+						assert(num_hyphen == 1);
+						assert(!num_comma);
+						{
+							char *m;
+							assert((m = strdup(optarg)) != NULL);
+							{
+								size_t i;
+								for (i = 0; i < strlen(optarg); i++) {
+									if (m[i] == '-') {
+										m[i] = '\0';
+										break;
+									}
+								}
+								assert(i != strlen(optarg) - 1 && i != strlen(optarg));
+								{
+									uint16_t from = atoi(&m[0]), to = atoi(&m[i + 1]);
+									assert(from <= to);
+									{
+										uint16_t j, k;
+										for (j = 0, k = from; k <= to; j++, k++)
+											sa->sd[j].core_id = k;
+										sa->num_cores = j;
+									}
+								}
+							}
+							free(m);
+						}
+					} else if (num_comma) {
+						assert(num_comma + 1 < SUB_MAX_CORE);
+						{
+							char *m;
+							assert((m = strdup(optarg)) != NULL);
+							{
+								size_t i, j, k;
+								for (i = 0, j = 0, k = 0; i < strlen(optarg) + 1; i++) {
+									if (i == strlen(optarg) || m[i] == ',') {
+										m[i] = '\0';
+										if (j != i)
+											sa->sd[k++].core_id = atoi(&m[j]);
+										j = i + 1;
+									}
+									if (i == strlen(optarg))
+										break;
+								}
+								assert(k);
+								sa->num_cores = k;
+							}
+							free(m);
+						}
+					} else {
+						sa->sd[0].core_id = atoi(optarg);
+						sa->num_cores = 1;
+					}
+				}
+				break;
+			case 'n':
+				sa->num_io_threads = atoi(optarg);
+				break;
+			default:
+				assert(0);
+				break;
+			}
+		}
+	}
+	__iip_assert(sa->num_cores);
+	__iip_assert(sa->num_io_threads);
+	__iip_assert(sa->num_io_threads <= sa->num_cores);
+	{
+		uint16_t i;
+		for (i = 0; i < sa->num_cores; i++) {
+			sa->sd[i].th_id = i;
+			sa->sd[i].opaque_array[3] = (void *) sa;
+			sa->sd[i].opaque_array[4] = (void *) &sa->sd[i];
+			__iip_assert(!pthread_create(&sa->sd[i].th, NULL, app_sub_thread, &sa->sd[i]));
+			{
+				cpu_set_t cs;
+				CPU_ZERO(&cs);
+				CPU_SET(sa->sd[i].core_id, &cs);
+				__iip_assert(!pthread_setaffinity_np(sa->sd[i].th, sizeof(cs), &cs));
+			}
+		}
+	}
+	return sa;
+}
+
+#define M2S(s) _M2S(s)
+#define _M2S(s) #s
+#include M2S(IOSUB_MAIN_C)
+#undef _M2S
+#undef M2S
+```
+
+Please save the following program as ```bench-iip/sub/iip_main.c```.
+
+```
+static void *__m__iip_ops_pkt_alloc(void *opaque);
+static void __m__iip_pkt_free(void *pkt, void *opaque);
+static void *__m_iip_ops_pkt_alloc(void *opaque);
+static void __m_iip_ops_pkt_free(void *pkt, void *opaque);
+static void *__m_iip_ops_pkt_get_data(void *pkt, void *opaque);
+static uint16_t __m_iip_ops_pkt_get_len(void *pkt, void *opaque);
+static void __m_iip_ops_pkt_set_len(void *pkt, uint16_t len, void *opaque);
+static void __m_iip_ops_pkt_increment_head(void *pkt, uint16_t len, void *opaque);
+static void __m_iip_ops_pkt_decrement_tail(void *pkt, uint16_t len, void *opaque);
+static void *__m_iip_ops_pkt_clone(void *pkt, void *opaque);
+static void __m_iip_ops_pkt_scatter_gather_chain_append(void *pkt_head, void *pkt_tail, void *opaque);
+static void *__m_iip_ops_pkt_scatter_gather_chain_get_next(void *pkt_head, void *opaque);
+
+#define iip_udp_send		__o_iip_udp_send
+#define iip_tcp_connect		__o_iip_tcp_connect
+#define iip_tcp_rxbuf_consumed	__o_iip_tcp_rxbuf_consumed
+#define iip_tcp_close		__o_iip_tcp_close
+#define iip_tcp_send		__o_iip_tcp_send
+#define iip_arp_request		__o_iip_arp_request
+
+#include "../iip/main.c"
+
+#undef iip_udp_send
+#undef iip_tcp_connect
+#undef iip_tcp_rxbuf_consumed
+#undef iip_tcp_close
+#undef iip_tcp_send
+#undef iip_arp_request
+
+static uint16_t iip_udp_send(void *_mem,
+			     uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
+			     uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
+			     void *pkt, void *opaque);
+static uint16_t iip_tcp_connect(void *_mem,
+				uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
+				uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
+				void *opaque);
+static void iip_tcp_rxbuf_consumed(void *_mem, void *_handle, uint16_t cnt, void *opaque);
+static uint16_t iip_tcp_close(void *_mem, void *_handle, void *opaque);
+static uint16_t iip_tcp_send(void *_mem, void *_handle, void *pkt, uint16_t tcp_flags, void *opaque);
+static void iip_arp_request(void *_mem,
+			    uint8_t local_mac[],
+			    uint32_t local_ip4_be,
+			    uint32_t target_ip4_be,
+			    void *opaque);
+
+#define iip_ops_pkt_alloc			    __m_iip_ops_pkt_alloc
+#define iip_ops_pkt_free	    		    __m_iip_ops_pkt_free
+#define iip_ops_pkt_get_data	    		    __m_iip_ops_pkt_get_data
+#define iip_ops_pkt_get_len	    		    __m_iip_ops_pkt_get_len
+#define iip_ops_pkt_set_len	    		    __m_iip_ops_pkt_set_len
+#define iip_ops_pkt_increment_head  		    __m_iip_ops_pkt_increment_head
+#define iip_ops_pkt_decrement_tail  		    __m_iip_ops_pkt_decrement_tail
+#define iip_ops_pkt_clone	    		    __m_iip_ops_pkt_clone
+#define iip_ops_pkt_scatter_gather_chain_append	    __m_iip_ops_pkt_scatter_gather_chain_append
+#define iip_ops_pkt_scatter_gather_chain_get_next   __m_iip_ops_pkt_scatter_gather_chain_get_next
+
+#define iip_ops_arp_reply			    __o_iip_ops_arp_reply
+#define iip_ops_icmp_reply	    		    __o_iip_ops_icmp_reply
+#define iip_ops_tcp_accept	    		    __o_iip_ops_tcp_accept
+#define iip_ops_tcp_accepted	    		    __o_iip_ops_tcp_accepted
+#define iip_ops_tcp_connected	    		    __o_iip_ops_tcp_connected
+#define iip_ops_tcp_payload	    		    __o_iip_ops_tcp_payload
+#define iip_ops_tcp_acked	    		    __o_iip_ops_tcp_acked
+#define iip_ops_tcp_closed	    		    __o_iip_ops_tcp_closed
+#define iip_ops_udp_payload	    		    __o_iip_ops_udp_payload
+```
+
+In ```bench-iip/sub```, please type the following command to generate a file ```bench-iip/sub/a.out```.
+
+```
+IOSUB_DIR=../iip-dpdk make -f ../Makefile
+```
+
+The generated file can be executed by the following commands.
+
+```
+sudo LD_LIBRARY_PATH=../iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1 -v 1 -- -c 1 -n 1
+```
+
+The specification in the last section ```-c 1 -n 1``` means the sub thread uses CPU core 1 (```-c 1```) to execute the application logic, and tells that there is 1 I/O (DPDK) thread (```-n 1```); the number of I/O (DPDK) thread is specified by ```-l 0``` in the first section.
+
 ## performance numbers of other TCP/IP stacks
 
 We show rough performance numbers of other TCP/IP stacks.
