@@ -117,7 +117,6 @@ static uint64_t BENCH_IIP_NOW(void *opaque)
 
 struct thread_data {
 	uint16_t core_id;
-	void *workspace;
 	struct {
 		uint16_t cnt;
 		void *pkt[MAX_PAYLOAD_PKT_CNT];
@@ -195,7 +194,7 @@ static uint8_t __app_should_stop(void *opaque)
 	return td->should_stop;
 }
 
-static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur, uint16_t cnt, void *opaque)
+static void __tcp_send_content(void *mem, void *handle, struct tcp_opaque *to, uint16_t cur, uint16_t cnt, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	{
@@ -211,7 +210,7 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 					l += iip_ops_pkt_get_len(m, opaque);
 					if (++cur == td->payload.cnt)
 						cur = 0;
-					assert(!iip_tcp_send(td->workspace, handle, m, (i == cnt - 1 ? 0x08U /* PSH */ : 0), opaque));
+					assert(!iip_tcp_send(mem, handle, m, (i == cnt - 1 ? 0x08U /* PSH */ : 0), opaque));
 				}
 			}
 			if (ad->pacing_pps) {
@@ -228,7 +227,7 @@ static void __tcp_send_content(void *handle, struct tcp_opaque *to, uint16_t cur
 
 #define MAX_PORT_CNT (1024)
 
-static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
+static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	{
@@ -282,7 +281,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 								(ad->remote_ip4_addr_be >>  8) & 0xff,
 								(ad->remote_ip4_addr_be >> 16) & 0xff,
 								(ad->remote_ip4_addr_be >> 24) & 0xff);
-						iip_arp_request(td->workspace, mac, ip4_be, ad->remote_ip4_addr_be, opaque);
+						iip_arp_request(mem, mac, ip4_be, ad->remote_ip4_addr_be, opaque);
 						td->prev_arp = now;
 					}
 				}
@@ -307,7 +306,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 												(uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff),
 												(uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff),
 												ntohs(ad->l4_port_be), j);
-										assert(!iip_tcp_connect(td->workspace,
+										assert(!iip_tcp_connect(mem,
 													mac, ip4_be, htons(j),
 													ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
 													opaque));
@@ -327,7 +326,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 										{
 											uint16_t k;
 											for (k = 0; k < ad->io_depth; k++) {
-												assert(!iip_udp_send(td->workspace,
+												assert(!iip_udp_send(mem,
 															mac, ip4_be, htons(j),
 															ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
 															m, opaque));
@@ -354,7 +353,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 					for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 						if (td->tcp.conn_list[i]->sent != td->payload.cnt) {
 							if ((1000000000UL / ad->pacing_pps) < BENCH_IIP_NOW(opaque) - td->tcp.conn_list[i]->prev_sent) {
-								__tcp_send_content(td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], td->tcp.conn_list[i]->cur, td->payload.cnt - td->tcp.conn_list[i]->sent, opaque);
+								__tcp_send_content(mem, td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], td->tcp.conn_list[i]->cur, td->payload.cnt - td->tcp.conn_list[i]->sent, opaque);
 								if (++td->tcp.conn_list[i]->cur == td->payload.cnt)
 									td->tcp.conn_list[i]->cur = 0;
 							}
@@ -443,7 +442,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 										ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
 										opaque)) {
 								__APP_PRINTF("send stop request to the remote host (local port %u)\n", i); fflush(stdout);
-								assert(!iip_tcp_connect(ad->tds[td->core_id]->workspace,
+								assert(!iip_tcp_connect(mem,
 											mac, ip4_be, htons(i),
 											ad->remote_mac, ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
 											opaque));
@@ -494,7 +493,7 @@ static void __app_loop(uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *
 						if (td->tcp.conn_list_cnt) {
 							uint16_t i;
 							for (i = 0; i < td->tcp.conn_list_cnt; i++)
-								iip_tcp_close(td->workspace, td->tcp.conn_list[i]->handle, opaque);
+								iip_tcp_close(mem, td->tcp.conn_list[i]->handle, opaque);
 						} else
 							td->should_stop = 1;
 					}
@@ -517,7 +516,6 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 	assert((td = (struct thread_data *) mem_alloc_local(sizeof(struct thread_data))) != NULL);
 	memset(td, 0, sizeof(struct thread_data));
 	td->core_id = core_id;
-	td->workspace = workspace;
 	if (ad->payload_len) {
 		uint32_t l = 0;
 		while (l != ad->payload_len) {
@@ -535,6 +533,9 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 	}
 	ad->tds[td->core_id] = td;
 	return td;
+	{ /* unused */
+		(void) workspace;
+	}
 }
 
 static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
@@ -612,7 +613,7 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 	return (void *) to;
 }
 
-static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
+static void *iip_ops_tcp_connected(void *mem, void *handle, void *m __attribute__((unused)), void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	{
@@ -633,7 +634,7 @@ static void *iip_ops_tcp_connected(void *mem __attribute__((unused)), void *hand
 			} else {
 				uint16_t i;
 				for (i = 0; i < ad->io_depth; i++) {
-					__tcp_send_content(handle, to, to->cur, 1, opaque);
+					__tcp_send_content(mem, handle, to, to->cur, 1, opaque);
 					if (++to->cur == td->payload.cnt)
 						to->cur = 0;
 				}
@@ -673,7 +674,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 			if (ad->pacing_pps)
 				((struct tcp_opaque *) tcp_opaque)->sent--;
 			else
-				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
+				__tcp_send_content(mem, handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
 			break;
 		case 2: /* burst */
 			break;
@@ -701,7 +702,7 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 			if (ad->pacing_pps)
 				((struct tcp_opaque *) tcp_opaque)->sent--;
 			else {
-				__tcp_send_content(handle, (struct tcp_opaque *) tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
+				__tcp_send_content(mem, handle, (struct tcp_opaque *) tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
 				{
 					void **opaque_array = (void **) opaque;
 					struct thread_data *td = (struct thread_data *) opaque_array[2];
@@ -752,7 +753,7 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
 	}
 }
 
-static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
+static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	{
@@ -761,7 +762,7 @@ static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void
 		{
 			void *_m;
 			assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
-			assert(!iip_udp_send(td->workspace,
+			assert(!iip_udp_send(mem,
 						iip_ops_l2_hdr_dst_ptr(m, opaque),
 						PB_IP4(iip_ops_pkt_get_data(m, opaque))->dst_be,
 						PB_UDP(iip_ops_pkt_get_data(m, opaque))->dst_be,
