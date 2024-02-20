@@ -719,7 +719,10 @@ static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
 	}
 }
 
-static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_opaque, void *opaque)
+static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
+			       uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
+			       uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
+			       void *tcp_opaque, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	struct app_data *ad = (struct app_data *) opaque_array[1];
@@ -739,6 +742,14 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)), void *tcp_o
 			td->should_stop = 1;
 	}
 	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --ad->active_conn);
+	{ /* unused */
+		(void) local_mac;
+		(void) local_ip4_be;
+		(void) local_port_be;
+		(void) peer_mac;
+		(void) peer_ip4_be;
+		(void) peer_port_be;
+	}
 }
 
 static void iip_ops_udp_payload(void *mem __attribute__((unused)), void *m, void *opaque)
