@@ -793,6 +793,7 @@ static int __iosub_main(int argc, char *const *argv);
 
 #define SUB_MAX_CORE (128)
 #define NUM_OP_SLOT (512)
+#define OP_BATCH_SIZE (1)
 
 enum {
 	OP_ARP_REPLY = 1,
@@ -828,7 +829,9 @@ struct sub_data {
 	uint32_t ip4_be;
 	struct {
 		volatile uint16_t head;
+		uint16_t cur;
 		volatile uint16_t tail;
+		uint16_t tail_cache;
 		struct {
 			uint64_t op;
 			uint64_t arg[9];
@@ -851,22 +854,32 @@ static uint16_t iip_udp_send(void *_mem,
 {
 	void **opaque_array = (void **) opaque;
 	struct sub_data *sd = (struct sub_data *) opaque_array[4];
-	uint16_t h = sd->opq[1].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
-	sd->opq[1].slot[h].op = DO_UDP_SEND;
-	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[0].slot[h].arg[1] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[1].slot[h].arg[2] = (uint64_t) local_ip4_be;
-	sd->opq[1].slot[h].arg[3] = (uint64_t) local_port_be;
-	sd->opq[0].slot[h].arg[4] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[1].slot[h].arg[5] = (uint64_t) peer_ip4_be;
-	sd->opq[1].slot[h].arg[6] = (uint64_t) peer_port_be;
-	sd->opq[1].slot[h].arg[7] = (uint64_t) pkt;
-	sd->opq[1].slot[h].arg[8] = 0; /* opaque */
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[1].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+		sd->opq[1].tail_cache = atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[1].tail); }
+		}
+	}
+	sd->opq[1].slot[c].op = DO_UDP_SEND;
+	sd->opq[1].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[c].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[c].arg[2] = (uint64_t) local_ip4_be;
+	sd->opq[1].slot[c].arg[3] = (uint64_t) local_port_be;
+	sd->opq[0].slot[c].arg[4] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[c].arg[5] = (uint64_t) peer_ip4_be;
+	sd->opq[1].slot[c].arg[6] = (uint64_t) peer_port_be;
+	sd->opq[1].slot[c].arg[7] = (uint64_t) pkt;
+	sd->opq[1].slot[c].arg[8] = 0; /* opaque */
+	c = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[1].head <= sd->opq[1].cur ? sd->opq[1].cur - sd->opq[1].head : NUM_OP_SLOT + sd->opq[1].head - sd->opq[1].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+	}
 	return 0; /* XXX: assuming always 0 is returned */
 }
 
@@ -877,21 +890,31 @@ static uint16_t iip_tcp_connect(void *_mem,
 {
 	void **opaque_array = (void **) opaque;
 	struct sub_data *sd = (struct sub_data *) opaque_array[4];
-	uint16_t h = sd->opq[1].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
-	sd->opq[1].slot[h].op = DO_TCP_CONNECT;
-	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[0].slot[h].arg[1] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[1].slot[h].arg[2] = (uint64_t) local_ip4_be;
-	sd->opq[1].slot[h].arg[3] = (uint64_t) local_port_be;
-	sd->opq[0].slot[h].arg[4] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[1].slot[h].arg[5] = (uint64_t) peer_ip4_be;
-	sd->opq[1].slot[h].arg[6] = (uint64_t) peer_port_be;
-	sd->opq[1].slot[h].arg[7] = 0; /* opaque */
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[1].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+		sd->opq[1].tail_cache = atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[1].tail); }
+		}
+	}
+	sd->opq[1].slot[c].op = DO_TCP_CONNECT;
+	sd->opq[1].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[c].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[c].arg[2] = (uint64_t) local_ip4_be;
+	sd->opq[1].slot[c].arg[3] = (uint64_t) local_port_be;
+	sd->opq[0].slot[c].arg[4] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[c].arg[5] = (uint64_t) peer_ip4_be;
+	sd->opq[1].slot[c].arg[6] = (uint64_t) peer_port_be;
+	sd->opq[1].slot[c].arg[7] = 0; /* opaque */
+	c = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[1].head <= sd->opq[1].cur ? sd->opq[1].cur - sd->opq[1].head : NUM_OP_SLOT + sd->opq[1].head - sd->opq[1].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+	}
 	return 0; /* XXX: assuming always 0 is returned */
 }
 
@@ -900,16 +923,25 @@ static void iip_tcp_rxbuf_consumed(void *_mem, void *_handle, uint16_t cnt, void
 #if 0
 	void **opaque_array = (void **) opaque;
 	struct sub_data *sd = (struct sub_data *) opaque_array[4];
-	uint16_t h = sd->opq[1].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("waiting %u %u", h, sd->opq[1].tail); }
-	sd->opq[1].slot[h].op = DO_TCP_RXBUF_CONSUMED;
-	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[1].slot[h].arg[1] = (uint64_t) _handle;
-	sd->opq[1].slot[h].arg[2] = (uint64_t) cnt;
-	sd->opq[1].slot[h].arg[3] = 0; /* opaque */
-	h = (h == NUM_OP_SLOT - 1 ? 0 : h + 1);
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[1].head, h, memory_order_release);
+	uint16_t c = sd->opq[1].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+		sd->opq[1].tail_cache = atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[1].tail); }
+		}
+	}
+	sd->opq[1].slot[c].op = DO_TCP_RXBUF_CONSUMED;
+	sd->opq[1].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[1].slot[c].arg[1] = (uint64_t) _handle;
+	sd->opq[1].slot[c].arg[2] = (uint64_t) cnt;
+	sd->opq[1].slot[c].arg[3] = 0; /* opaque */
+	c = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[1].head <= sd->opq[1].cur ? sd->opq[1].cur - sd->opq[1].head : NUM_OP_SLOT + sd->opq[1].head - sd->opq[1].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+	}
 #endif
 	{
 		(void) _mem;
@@ -923,14 +955,24 @@ static uint16_t iip_tcp_close(void *_mem, void *_handle, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	struct sub_data *sd = (struct sub_data *) opaque_array[4];
-	uint16_t h = sd->opq[1].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
-	sd->opq[1].slot[h].op = DO_TCP_CLOSE;
-	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[1].slot[h].arg[1] = (uint64_t) _handle;
-	sd->opq[1].slot[h].arg[2] = 0; /* opaque */
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[1].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+		sd->opq[1].tail_cache = atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[1].tail); }
+		}
+	}
+	sd->opq[1].slot[c].op = DO_TCP_CLOSE;
+	sd->opq[1].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[1].slot[c].arg[1] = (uint64_t) _handle;
+	sd->opq[1].slot[c].arg[2] = 0; /* opaque */
+	sd->opq[1].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[1].head <= sd->opq[1].cur ? sd->opq[1].cur - sd->opq[1].head : NUM_OP_SLOT + sd->opq[1].head - sd->opq[1].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+	}
 	return 0; /* XXX: assuming always 0 is returned */
 }
 
@@ -938,16 +980,26 @@ static uint16_t iip_tcp_send(void *_mem, void *_handle, void *pkt, uint16_t tcp_
 {
 	void **opaque_array = (void **) opaque;
 	struct sub_data *sd = (struct sub_data *) opaque_array[4];
-	uint16_t h = sd->opq[1].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
-	sd->opq[1].slot[h].op = DO_TCP_SEND;
-	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[1].slot[h].arg[1] = (uint64_t) _handle;
-	sd->opq[1].slot[h].arg[2] = (uint64_t) pkt;
-	sd->opq[1].slot[h].arg[3] = (uint64_t) tcp_flags;
-	sd->opq[1].slot[h].arg[4] = 0; /* opaque */
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[1].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+		sd->opq[1].tail_cache = atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[1].tail); }
+		}
+	}
+	sd->opq[1].slot[c].op = DO_TCP_SEND;
+	sd->opq[1].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[1].slot[c].arg[1] = (uint64_t) _handle;
+	sd->opq[1].slot[c].arg[2] = (uint64_t) pkt;
+	sd->opq[1].slot[c].arg[3] = (uint64_t) tcp_flags;
+	sd->opq[1].slot[c].arg[4] = 0; /* opaque */
+	sd->opq[1].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[1].head <= sd->opq[1].cur ? sd->opq[1].cur - sd->opq[1].head : NUM_OP_SLOT + sd->opq[1].head - sd->opq[1].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+	}
 	return 0; /* XXX: assuming always 0 is returned */
 }
 
@@ -959,17 +1011,27 @@ static void iip_arp_request(void *_mem,
 {
 	void **opaque_array = (void **) opaque;
 	struct sub_data *sd = (struct sub_data *) opaque_array[4];
-	uint16_t h = sd->opq[1].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[1].tail); }
-	sd->opq[1].slot[h].op = DO_ARP_REQUEST;
-	sd->opq[1].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[0].slot[h].arg[1] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[1].slot[h].arg[2] = (uint64_t) local_ip4_be;
-	sd->opq[1].slot[h].arg[3] = (uint64_t) target_ip4_be;
-	sd->opq[1].slot[h].arg[4] = 0; /* opaque */
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[1].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[1].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+		sd->opq[1].tail_cache = atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[1].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[1].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[1].tail); }
+		}
+	}
+	sd->opq[1].slot[c].op = DO_ARP_REQUEST;
+	sd->opq[1].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[c].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[1].slot[c].arg[2] = (uint64_t) local_ip4_be;
+	sd->opq[1].slot[c].arg[3] = (uint64_t) target_ip4_be;
+	sd->opq[1].slot[c].arg[4] = 0; /* opaque */
+	sd->opq[1].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[1].head <= sd->opq[1].cur ? sd->opq[1].cur - sd->opq[1].head : NUM_OP_SLOT + sd->opq[1].head - sd->opq[1].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
+	}
 }
 
 static void *app_sub_thread(void *data)
@@ -1019,7 +1081,7 @@ static void *app_sub_thread(void *data)
 					break;
 				case OP_UDP_PAYLOAD:
 					__o_iip_ops_udp_payload((void *) sd->opq[0].slot[t].arg[0], (void *) (void *) sd->opq[0].slot[t].arg[1], (void *) sd->opq[0].slot[t].arg[2]);
-					iip_ops_pkt_free((void *) (void *) sd->opq[0].slot[t].arg[1], sd->opaque_array);
+					iip_ops_pkt_free((void *) sd->opq[0].slot[t].arg[1], sd->opaque_array);
 					break;
 				default:
 					assert(0);
@@ -1030,6 +1092,10 @@ static void *app_sub_thread(void *data)
 			if (t != sd->opq[0].tail) {
 				__asm__ volatile("" ::: "memory");
 				atomic_store_explicit(&sd->opq[0].tail, t, memory_order_release);
+			}
+			if (sd->opq[1].head != sd->opq[1].cur) {
+				__asm__ volatile("" ::: "memory");
+				atomic_store_explicit(&sd->opq[1].head, sd->opq[1].cur, memory_order_release);
 			}
 		}
 		{
@@ -1046,15 +1112,25 @@ static void iip_ops_arp_reply(void *_mem, void *m, void *opaque)
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_ARP_REPLY;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[1]);
-	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_ARP_REPLY;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[1]);
+	sd->opq[0].slot[c].arg[2] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	}
 }
 
 static void iip_ops_icmp_reply(void *_mem, void *m, void *opaque)
@@ -1063,15 +1139,25 @@ static void iip_ops_icmp_reply(void *_mem, void *m, void *opaque)
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_ICMP_REPLY;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) _mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[1]);
-	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_ICMP_REPLY;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) _mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[1]);
+	sd->opq[0].slot[c].arg[2] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	}
 }
 
 static uint8_t iip_ops_tcp_accept(void *mem, void *m, void *opaque)
@@ -1080,17 +1166,25 @@ static uint8_t iip_ops_tcp_accept(void *mem, void *m, void *opaque)
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_TCP_ACCEPT;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[1]);
-	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_TCP_ACCEPT;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[1]);
+	sd->opq[0].slot[c].arg[2] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
 	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
-	return (uint8_t) sd->opq[0].slot[h].op;
+	atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
+	return (uint8_t) sd->opq[0].slot[c].op;
 }
 
 static void *iip_ops_tcp_accepted(void *mem, void *handle, void *m, void *opaque)
@@ -1099,18 +1193,26 @@ static void *iip_ops_tcp_accepted(void *mem, void *handle, void *m, void *opaque
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_TCP_ACCEPTED;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
-	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[2]);
-	sd->opq[0].slot[h].arg[3] = (uint64_t) sd->opaque_array;
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_TCP_ACCEPTED;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[c].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[2]);
+	sd->opq[0].slot[c].arg[3] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
 	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
-	return (void *) sd->opq[0].slot[h].op;
+	atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
+	return (void *) sd->opq[0].slot[c].op;
 }
 
 static void *iip_ops_tcp_connected(void *mem, void *handle, void *m, void *opaque)
@@ -1119,18 +1221,26 @@ static void *iip_ops_tcp_connected(void *mem, void *handle, void *m, void *opaqu
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_TCP_CONNECTED;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
-	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[2]);
-	sd->opq[0].slot[h].arg[3] = (uint64_t) sd->opaque_array;
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_TCP_CONNECTED;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[c].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[2]);
+	sd->opq[0].slot[c].arg[3] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
 	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
-	return (void *) sd->opq[0].slot[h].op;
+	atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
+	return (void *) sd->opq[0].slot[c].op;
 }
 
 static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
@@ -1141,19 +1251,29 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_TCP_PAYLOAD;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
-	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[2]);
-	sd->opq[0].slot[h].arg[3] = (uint64_t) tcp_opaque;
-	sd->opq[0].slot[h].arg[4] = (uint64_t) head_off;
-	sd->opq[0].slot[h].arg[5] = (uint64_t) tail_off;
-	sd->opq[0].slot[h].arg[6] = (uint64_t) sd->opaque_array;
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_TCP_PAYLOAD;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[c].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[2]);
+	sd->opq[0].slot[c].arg[3] = (uint64_t) tcp_opaque;
+	sd->opq[0].slot[c].arg[4] = (uint64_t) head_off;
+	sd->opq[0].slot[c].arg[5] = (uint64_t) tail_off;
+	sd->opq[0].slot[c].arg[6] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	}
 	__o_iip_tcp_rxbuf_consumed(mem, handle, 1, opaque);
 }
 
@@ -1167,18 +1287,27 @@ static void iip_ops_tcp_acked(void *mem,
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_TCP_ACKED;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) handle;
-	sd->opq[0].slot[h].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[2]);
-	sd->opq[0].slot[h].arg[3] = (uint64_t) tcp_opaque;
-	sd->opq[0].slot[h].arg[4] = (uint64_t) sd->opaque_array;
-	h = (h == NUM_OP_SLOT - 1 ? 0 : h + 1);
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, h, memory_order_release);
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_TCP_ACKED;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) handle;
+	sd->opq[0].slot[c].arg[2] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[2]);
+	sd->opq[0].slot[c].arg[3] = (uint64_t) tcp_opaque;
+	sd->opq[0].slot[c].arg[4] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	}
 }
 
 static void iip_ops_tcp_closed(void *handle,
@@ -1190,22 +1319,32 @@ static void iip_ops_tcp_closed(void *handle,
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((peer_ip4_be + peer_port_be + local_port_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_TCP_CLOSED;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) handle;
-	sd->opq[0].slot[h].arg[1] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[0].slot[h].arg[2] = local_ip4_be;
-	sd->opq[0].slot[h].arg[3] = local_port_be;
-	sd->opq[0].slot[h].arg[4] = 0;
-	__iip_memcpy(sd->opq[0].slot[h].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
-	sd->opq[0].slot[h].arg[5] = peer_ip4_be;
-	sd->opq[0].slot[h].arg[6] = peer_port_be;
-	sd->opq[0].slot[h].arg[7] = (uint64_t) tcp_opaque;
-	sd->opq[0].slot[h].arg[8] = (uint64_t) sd->opaque_array;
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_TCP_CLOSED;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) handle;
+	sd->opq[0].slot[c].arg[1] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[0], local_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[0].slot[c].arg[2] = local_ip4_be;
+	sd->opq[0].slot[c].arg[3] = local_port_be;
+	sd->opq[0].slot[c].arg[4] = 0;
+	__iip_memcpy(sd->opq[0].slot[c].mac[1], peer_mac, IIP_CONF_L2ADDR_LEN_MAX /* FIXME */);
+	sd->opq[0].slot[c].arg[5] = peer_ip4_be;
+	sd->opq[0].slot[c].arg[6] = peer_port_be;
+	sd->opq[0].slot[c].arg[7] = (uint64_t) tcp_opaque;
+	sd->opq[0].slot[c].arg[8] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	}
 }
 
 static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
@@ -1214,15 +1353,25 @@ static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
 	struct sub_app_global_data *sa = opaque_array[1];
 	uint16_t core_id = (uint16_t)(uintptr_t) opaque_array[2];
 	struct sub_data *sd = &sa->sd[((PB_IP4(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be + PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be) % (sa->num_cores / sa->num_io_threads)) * (sa->num_cores / sa->num_io_threads) + core_id];
-	uint16_t h = sd->opq[0].head;
-	while ((h == NUM_OP_SLOT - 1 ? 0 : h + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, h, sd->opq[0].tail); }
-	sd->opq[0].slot[h].op = OP_UDP_PAYLOAD;
-	sd->opq[0].slot[h].arg[0] = (uint64_t) mem;
-	sd->opq[0].slot[h].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
-	__iip_assert(sd->opq[0].slot[h].arg[1]);
-	sd->opq[0].slot[h].arg[2] = (uint64_t) sd->opaque_array;
-	__asm__ volatile("" ::: "memory");
-	atomic_store_explicit(&sd->opq[0].head, (h == NUM_OP_SLOT - 1 ? 0 : h + 1), memory_order_release);
+	uint16_t c = sd->opq[0].cur;
+	if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+		sd->opq[0].tail_cache = atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire);
+		if ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == sd->opq[0].tail_cache) {
+			__asm__ volatile ("" ::: "memory");
+			atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+			while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) == atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { IIP_OPS_DEBUG_PRINTF("%u waiting %u %u\n", __LINE__, c, sd->opq[0].tail); }
+		}
+	}
+	sd->opq[0].slot[c].op = OP_UDP_PAYLOAD;
+	sd->opq[0].slot[c].arg[0] = (uint64_t) mem;
+	sd->opq[0].slot[c].arg[1] = (uint64_t) iip_ops_pkt_clone(m, opaque);
+	__iip_assert(sd->opq[0].slot[c].arg[1]);
+	sd->opq[0].slot[c].arg[2] = (uint64_t) sd->opaque_array;
+	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
+	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
+		__asm__ volatile ("" ::: "memory");
+		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	}
 }
 
 static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
@@ -1280,6 +1429,10 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 				if (t != sa->sd[i].opq[1].tail) {
 					__asm__ volatile("" ::: "memory");
 					atomic_store_explicit(&sa->sd[i].opq[1].tail, t, memory_order_release);
+				}
+				if (sa->sd[i].opq[0].head != sa->sd[i].opq[0].cur) {
+					__asm__ volatile("" ::: "memory");
+					atomic_store_explicit(&sa->sd[i].opq[0].head, sa->sd[i].opq[0].cur, memory_order_release);
 				}
 			}
 		}
