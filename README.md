@@ -227,6 +227,10 @@ cnt=0; while [ $cnt -le 31 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 - server (Linux)
 
+<details>
+
+<summary>please click here to show the code of the program</summary>
+
 ```c
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -642,6 +646,8 @@ int main(int argc, char *const *argv)
 }
 ```
 
+</details>
+
 The following compiles the program above (```program_above.c```) and generates an executable file ```app```.
 
 ```
@@ -737,7 +743,11 @@ numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i
 
 Please save the following program as ```bench-iip/sub/main.c```.
 
-```
+<details>
+
+<summary>please click here to show the program</summary>
+
+```c
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -1607,9 +1617,15 @@ static void *__app_init(int argc, char *const *argv)
 #undef M2S
 ```
 
+</details>
+
 Please save the following program as ```bench-iip/sub/iip_main.c```.
 
-```
+<details>
+
+<summary>please click here to show the program</summary>
+
+```c
 #define iip_udp_send		__o_iip_udp_send
 #define iip_tcp_connect		__o_iip_tcp_connect
 #define iip_tcp_rxbuf_consumed	__o_iip_tcp_rxbuf_consumed
@@ -1654,6 +1670,8 @@ static void iip_arp_request(void *_mem,
 #define iip_ops_udp_payload	    		    __o_iip_ops_udp_payload
 ```
 
+</details>
+
 In ```bench-iip/sub```, please type the following command to generate a file ```bench-iip/sub/a.out```.
 
 ```
@@ -1669,6 +1687,10 @@ sudo LD_LIBRARY_PATH=../iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 
 The specification in the last section ```-c 1 -n 1``` means the sub thread uses CPU core 1 (```-c 1```) to execute the application logic, and tells that there is 1 I/O (DPDK) thread (```-n 1```); the number of I/O (DPDK) thread is specified by ```-l 0``` in the first section.
 
 Note: for this thread separation program and particularly for request-response workloads, the following change in ```iip/main.c``` (e423db4bee7c75d028a5f5ae0cb3a4a249caa940) omits the code to immediately transmit an ack packet for received data, and leads to better performance; This change usually does not imporove performance for bulk transfer workloads.
+
+<details>
+
+<summary>please click here to show the change</summary>
 
 ```diff
 --- a/main.c
@@ -1687,6 +1709,8 @@ Note: for this thread separation program and particularly for request-response w
                                                 struct pb *queue[2] = { 0 };
                                                 if (conn->sack_ok && conn->head[4][1]) {
 ```
+
+</details>
 
 ## performance numbers of other TCP/IP stacks
 
@@ -1739,6 +1763,10 @@ command to launch the benchmark server
 - a3e1ea3d3917554573024483fb159b73e8bc3aa5
 - Linux kernel 6.2 (Ubuntu 22.04)
 
+<details>
+
+<summary>please click here to see changes made for this test</summary>
+
 We change the program to always reply "A".
 
 ```diff
@@ -1769,6 +1797,8 @@ We change the program to always reply "A".
                 }
 ```
 
+</details>
+
 command to launch the benchmark server
 
 ```
@@ -1780,6 +1810,10 @@ sudo LD_LIBRARY_PATH=./dpdk/install/lib/x86_64-linux-gnu ./app -l 0 --proc-type=
 - https://github.com/scylladb/seastar.git
 - 10b7d604d1f5037a733879d8d171d4405faebbe9
 - Linux kernel 6.2 (Ubuntu 22.04)
+
+<details>
+
+<summary>please click here to see changes made for this test</summary>
 
 A build-relevant file is changed to involve the mlx5 driver.
 
@@ -1876,6 +1910,8 @@ build apps/memcached/memcached: CXX_EXECUTABLE_LINKER__app_memcached_RelWithDebI
   TARGET_PDB = memcached.dbg
 ```
 
+</details>
+
 command to launch the benchmark server
 
 ```
@@ -1887,6 +1923,10 @@ build/release/apps/memcached/memcached --network-stack native --dpdk-pmd --dhcp 
 - https://github.com/F-Stack/f-stack.git
 - 81b0219b097156693e6061ce215dc79687ef7f92
 - Linux kernel 6.2 (Ubuntu 22.04)
+
+<details>
+
+<summary>please click here to see changes made for this test</summary>
 
 The following is the change made to the configuration file.
 
@@ -1977,6 +2017,8 @@ We changed an HTTP-server like example to always return "A" to incoming TCP mess
      my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 ```
 
+</details>
+
 command to launch the benchmark server
 
 ```
@@ -1988,6 +2030,10 @@ command to launch the benchmark server
 - https://github.com/tcp-acceleration-service/tas.git
 - d3926baf6ad65211dc724206a8420715eb5ab645
 - Linux kernel 6.2 (Ubuntu 22.04)
+
+<details>
+
+<summary>please click here to see changes made for this test</summary>
 
 We remove ```-Werror``` and manipulate several path settings to pass the compilation.
 
@@ -2063,6 +2109,8 @@ We replace ```pthread_yield``` with ```sched_yield``` because the compiler sugge
      }
 ```
 
+</details>
+
 command to launch the service process of TAS
 
 ```
@@ -2080,6 +2128,10 @@ command to launch the benchmark server
 - https://github.com/shenango/caladan.git
 - 1ab795053531dacf6bde366471a4439ae72313c4
 - Linux kernel 5.15 (Ubuntu 22.04)
+
+<details>
+
+<summary>please click here to see changes made for this test</summary>
 
 ```diff
 --- a/apps/synthetic/src/main.rs
@@ -2145,6 +2197,8 @@ We change the port number that the servers listens on.
  static struct netaddr raddr;
 ```
 
+</details>
+
 command to launch the process for Caladan's IOKernel
 
 ```
@@ -2194,13 +2248,13 @@ For this benchmark, TAS uses three CPU cores and Caladan uses two CPU cores; TAS
 sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-31 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 0 -c 8 -d 1 -l 1
 ```
 
-***Linux***
+***Linux setup***
 
 ```
 ./app -c 0-7 -g 1 -l 1 -p 10000
 ```
 
-***Seastar***
+***Seastar setup***
 
 ```
 build/release/apps/memcached/memcached --network-stack native --dpdk-pmd --dhcp 0 --host-ipv4-addr 10.100.0.20 --netmask-ipv4-addr 255.255.255.0 --collectd 0 --smp 8 --port 10000
@@ -2210,6 +2264,10 @@ build/release/apps/memcached/memcached --network-stack native --dpdk-pmd --dhcp 
 
 The file ```server.config``` is changed so that ```runtime_kthreads``` will be 8.
 
+<details>
+
+<summary>please click here to see the configuration used for this test</summary>
+
 ```
 host_addr 10.100.0.20
 host_netmask 255.255.255.0
@@ -2218,6 +2276,8 @@ runtime_kthreads 8
 runtime_guaranteed_kthreads 8
 runtime_priority lc
 ```
+
+</details>
 
 command to launch the benchmark server
 
@@ -2242,7 +2302,7 @@ sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -
 
 ***note***
 
-Caladan uses 9 CPU cores for this benchmark (Caladan requires a dedicated CPU core for its scheduler), and the other cases use 8 CPU core.
+Caladan uses 9 CPU cores for this benchmark (Caladan requires a dedicated CPU core for its scheduler), and the other cases use 8 CPU cores.
 
 ### 32 CPU core server
 
@@ -2282,6 +2342,10 @@ sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -
 
 In our environment, 14 was the maximum number specified for ```runtime_kthreads```.
 
+<details>
+
+<summary>please click here to see the configuration used for this test</summary>
+
 ```
 host_addr 10.100.0.20
 host_netmask 255.255.255.0
@@ -2290,6 +2354,8 @@ runtime_kthreads 14
 runtime_guaranteed_kthreads 14
 runtime_priority lc
 ```
+
+</details>
 
 The client is launched by the following command.
 
@@ -2499,6 +2565,10 @@ mkdir ./iip-iostub
 ```
 
 The content of ```iip-iostub/main.c```.
+
+<details>
+
+<summary>please click here to show the program</summary>
 
 ```c
 static uint16_t helper_ip4_get_connection_affinity(uint16_t protocol, uint32_t local_ip4_be, uint16_t local_port_be, uint32_t peer_ip4_be, uint16_t peer_port_be, void *opaque)
@@ -2875,7 +2945,13 @@ static int __iosub_main(int argc, char *const *argv)
 }
 ```
 
+</details>
+
 The content of ```iip-iostub/build.mk```.
+
+<details>
+
+<summary>please click here to show the program</summary>
 
 ```Makefile
 CFLAGS += -pedantic
@@ -2887,6 +2963,8 @@ else ifeq ($(OSNAME),FreeBSD)
 CFLAGS += -std=c17
 endif
 ```
+
+</details>
 
 Supposedly, we will have ```a.out``` by the following command.
 
