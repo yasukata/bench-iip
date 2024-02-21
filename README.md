@@ -1668,6 +1668,26 @@ sudo LD_LIBRARY_PATH=../iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 
 
 The specification in the last section ```-c 1 -n 1``` means the sub thread uses CPU core 1 (```-c 1```) to execute the application logic, and tells that there is 1 I/O (DPDK) thread (```-n 1```); the number of I/O (DPDK) thread is specified by ```-l 0``` in the first section.
 
+Note: for this thread separation program and particularly for request-response workloads, the following change in ```iip/main.c``` (e423db4bee7c75d028a5f5ae0cb3a4a249caa940) omits the code to immediately transmit an ack packet for received data, and leads to better performance; This change usually does not imporove performance for bulk transfer workloads.
+
+```diff
+--- a/main.c
++++ b/main.c
+@@ -3242,10 +3242,12 @@ static uint16_t iip_run(void *_mem, uint8_t mac[], uint32_t ip4_be, void *pkt[],
+                                                                _next_us = _next_us_tmp;
+                                                }
+                                        }
++#if 0
+                                        if (!conn->head[3][0]) {
+                                                if ((__iip_ntohl(conn->ack_seq_be) != conn->ack_seq_sent)) /* we got payload, but ack is not pushed by the app */
+                                                        __iip_tcp_push(s, conn, NULL, 0, 1, 0, 0, 0, NULL, opaque);
+                                        }
++#endif
+                                        if (conn->do_ack_cnt) { /* push ack telling rx misses */
+                                                struct pb *queue[2] = { 0 };
+                                                if (conn->sack_ok && conn->head[4][1]) {
+```
+
 ## performance numbers of other TCP/IP stacks
 
 We show rough performance numbers of other TCP/IP stacks.
