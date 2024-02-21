@@ -2046,7 +2046,7 @@ We replace ```pthread_yield``` with ```sched_yield``` because the compiler sugge
 command to launch the service process of TAS
 
 ```
-LD_LIBRARY_PATH=$HOME/dpdk-inst/lib/x86_64-linux-gnu ./tas/tas --ip-addr=10.100.0.20/24 --fp-cores-max=2
+LD_LIBRARY_PATH=$HOME/dpdk-inst/lib/x86_64-linux-gnu ./tas/tas --ip-addr=10.100.0.20/24 --fp-cores-max=1
 ```
 
 command to launch the benchmark server
@@ -2158,13 +2158,13 @@ sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -
 | lwIP | 2330425 | 14.188 |
 | Seastar | 1135152 | 30.286 |
 | F-Stack | 1368221 | 23.884 |
-| TAS | 2326537 | 18.610 |
+| TAS | 1628830 | 26.794 |
 | Caladan | 2427353 | 17.263 |
 | iip | 2894734 | 15.314 |
 
 ***note***
 
-TAS and Caladan use two CPU cores for this benchmark (TAS needs one CPU core for its service process, and Caladan also requires a dedicated CPU core for its scheduler), and the other cases use one CPU core.
+For this benchmark, TAS uses three CPU cores and Caladan uses two CPU cores; TAS needs two extra CPU cores for its service process, and Caladan requires a dedicated CPU core for its scheduler. The other cases use one CPU core.
 
 ### 8 CPU core server
 
