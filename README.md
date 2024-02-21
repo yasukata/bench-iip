@@ -799,6 +799,7 @@ static int __iosub_main(int argc, char *const *argv);
 #undef iip_ops_udp_payload
 
 #include <stdatomic.h>
+#include <sys/poll.h>
 #include <pthread.h>
 
 #define SUB_MAX_CORE (128)
@@ -837,6 +838,8 @@ struct sub_data {
 	pthread_t th;
 	uint8_t mac[IIP_CONF_L2ADDR_LEN_MAX];
 	uint32_t ip4_be;
+	uint32_t wait_time_ms;
+	int pipe_fd[2];
 	struct {
 		volatile uint16_t head;
 		uint16_t cur;
@@ -1053,7 +1056,13 @@ static void *app_sub_thread(void *data)
 		sd->opaque_array[1] = (void *) ((struct sub_app_global_data *) sd->opaque_array[3])->app_global_opaque;
 		sd->opaque_array[2] = __o__app_thread_init(NULL, sd->th_id, sd->opaque_array);
 	}
+	if (sd->wait_time_ms) {
+		struct sched_param sp;
+		sp.sched_priority = 1;
+		__iip_assert(!pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp));
+	}
 	while (!(sd->flags & SUB_SHOULD_STOP)) {
+		uint32_t next_us = sd->wait_time_ms * 1000;
 		{
 			uint16_t h = atomic_load_explicit(&sd->opq[0].head, memory_order_acquire), t = sd->opq[0].tail;
 			while (h != t) {
@@ -1111,6 +1120,19 @@ static void *app_sub_thread(void *data)
 		{
 			uint32_t _next_us;
 			__o__app_loop(sd->workspace, sd->mac, sd->ip4_be, &_next_us, sd->opaque_array);
+			if (_next_us < next_us)
+				next_us = _next_us;
+		}
+		if (next_us) {
+			struct pollfd pollfd = {
+				.fd = sd->pipe_fd[0],
+				.events = POLLIN,
+			};
+			assert(poll(&pollfd, 1, (next_us / 1000)) != -1);
+			if (pollfd.revents & POLLIN) {
+				char b;
+				__iip_assert(read(sd->pipe_fd[0], &b, 1) == 1);
+			}
 		}
 	}
 	pthread_exit(NULL);
@@ -1140,6 +1162,10 @@ static void iip_ops_arp_reply(void *_mem, void *m, void *opaque)
 	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
 		__asm__ volatile ("" ::: "memory");
 		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+		if (sd->wait_time_ms) {
+			char b = 0;
+			__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+		}
 	}
 }
 
@@ -1167,6 +1193,10 @@ static void iip_ops_icmp_reply(void *_mem, void *m, void *opaque)
 	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
 		__asm__ volatile ("" ::: "memory");
 		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+		if (sd->wait_time_ms) {
+			char b = 0;
+			__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+		}
 	}
 }
 
@@ -1193,6 +1223,10 @@ static uint8_t iip_ops_tcp_accept(void *mem, void *m, void *opaque)
 	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
 	__asm__ volatile("" ::: "memory");
 	atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	if (sd->wait_time_ms) {
+		char b = 0;
+		__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+	}
 	while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
 	return (uint8_t) sd->opq[0].slot[c].op;
 }
@@ -1221,6 +1255,10 @@ static void *iip_ops_tcp_accepted(void *mem, void *handle, void *m, void *opaque
 	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
 	__asm__ volatile("" ::: "memory");
 	atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	if (sd->wait_time_ms) {
+		char b = 0;
+		__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+	}
 	while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
 	return (void *) sd->opq[0].slot[c].op;
 }
@@ -1249,6 +1287,10 @@ static void *iip_ops_tcp_connected(void *mem, void *handle, void *m, void *opaqu
 	sd->opq[0].cur = (c == NUM_OP_SLOT - 1 ? 0 : c + 1);
 	__asm__ volatile("" ::: "memory");
 	atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+	if (sd->wait_time_ms) {
+		char b = 0;
+		__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+	}
 	while ((c == NUM_OP_SLOT - 1 ? 0 : c + 1) != atomic_load_explicit(&sd->opq[0].tail, memory_order_acquire)) { } /* wait until app sets result */
 	return (void *) sd->opq[0].slot[c].op;
 }
@@ -1283,6 +1325,10 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
 		__asm__ volatile ("" ::: "memory");
 		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+		if (sd->wait_time_ms) {
+			char b = 0;
+			__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+		}
 	}
 	__o_iip_tcp_rxbuf_consumed(mem, handle, 1, opaque);
 }
@@ -1317,6 +1363,10 @@ static void iip_ops_tcp_acked(void *mem,
 	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
 		__asm__ volatile ("" ::: "memory");
 		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+		if (sd->wait_time_ms) {
+			char b = 0;
+			__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+		}
 	}
 }
 
@@ -1354,6 +1404,10 @@ static void iip_ops_tcp_closed(void *handle,
 	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
 		__asm__ volatile ("" ::: "memory");
 		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+		if (sd->wait_time_ms) {
+			char b = 0;
+			__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+		}
 	}
 }
 
@@ -1381,6 +1435,10 @@ static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
 	if (OP_BATCH_SIZE <= (sd->opq[0].head <= sd->opq[0].cur ? sd->opq[0].cur - sd->opq[0].head : NUM_OP_SLOT + sd->opq[0].head - sd->opq[0].cur)) {
 		__asm__ volatile ("" ::: "memory");
 		atomic_store_explicit(&sd->opq[0].head, sd->opq[0].cur, memory_order_release);
+		if (sd->wait_time_ms) {
+			char b = 0;
+			__iip_assert(write(sd->pipe_fd[1], &b, 1) == 1);
+		}
 	}
 }
 
@@ -1443,6 +1501,10 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 				if (sa->sd[i].opq[0].head != sa->sd[i].opq[0].cur) {
 					__asm__ volatile("" ::: "memory");
 					atomic_store_explicit(&sa->sd[i].opq[0].head, sa->sd[i].opq[0].cur, memory_order_release);
+					if (sa->sd[i].wait_time_ms) {
+						char b = 0;
+						__iip_assert(write(sa->sd[i].pipe_fd[1], &b, 1) == 1);
+					}
 				}
 			}
 		}
@@ -1506,7 +1568,7 @@ static void *__app_init(int argc, char *const *argv)
 	sa->app_global_opaque = __o__app_init(argc, argv);
 	{ /* parse arguments */
 		int ch;
-		while ((ch = getopt(argc, argv, "c:n:")) != -1) {
+		while ((ch = getopt(argc, argv, "c:e:n:")) != -1) {
 			switch (ch) {
 			case 'c':
 				{
@@ -1580,6 +1642,9 @@ static void *__app_init(int argc, char *const *argv)
 					}
 				}
 				break;
+			case 'e':
+				sa->sd[0].wait_time_ms = atoi(optarg);
+				break;
 			case 'n':
 				sa->num_io_threads = atoi(optarg);
 				break;
@@ -1598,6 +1663,9 @@ static void *__app_init(int argc, char *const *argv)
 			sa->sd[i].th_id = i;
 			sa->sd[i].opaque_array[3] = (void *) sa;
 			sa->sd[i].opaque_array[4] = (void *) &sa->sd[i];
+			sa->sd[i].wait_time_ms = sa->sd[0].wait_time_ms;
+			if (sa->sd[i].wait_time_ms)
+				__iip_assert(!pipe(sa->sd[i].pipe_fd));
 			__iip_assert(!pthread_create(&sa->sd[i].th, NULL, app_sub_thread, &sa->sd[i]));
 			{
 				cpu_set_t cs;
