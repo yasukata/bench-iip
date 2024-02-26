@@ -225,6 +225,74 @@ cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-$(($cnt == 0 ? 0 : $(($cnt-1)))) --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p $((10000+$cnt)) -g 1 -l 1; cnt=$(($cnt+2)); done
 ```
 
+<details>
+<summary>please click here to show the changes made for disabling zero-copy mode</summary>
+
+```iip-dpdk/main.c```
+
+```diff
+--- a/main.c
++++ b/main.c
+@@ -684,6 +684,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (max lro pkt size %u)\n", nic_conf[portid].rxmode.max_lro_pkt_size);
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX multi-seg: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS) {
+@@ -691,6 +692,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX IPv4 checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+```
+</details>
+
+<details>
+<summary>please click here to show the changes made for disabling the checksum offload feature of the NIC</summary>
+```diff
+--- a/main.c
++++ b/main.c
+@@ -669,6 +669,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (nic feature %lx udp-rss-all %lx)\n", dev_info.flow_type_rss_offloads, RTE_ETH_RSS_TCP);
+                                                } else printf("no\n"); /* TODO: software-based RSS */
+                                        }
++#if 0
+                                        {
+                                                printf("RX checksum: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_CHECKSUM) {
+@@ -676,6 +677,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("RX LRO: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
+@@ -691,6 +693,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX IPv4 checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+@@ -705,6 +708,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX TCP TSO: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
+```
+</details>
+
+
 - server (Linux)
 
 <details>
