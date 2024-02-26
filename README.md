@@ -211,6 +211,12 @@ Two machines having the same configuration.
 - NIC: Mellanox ConnectX-5 100 Gbps NIC (the NICs of the two machines are directly connected via a cable)
 - OS: Linux 6.2
 
+### version
+
+- iip: e423db4bee7c75d028a5f5ae0cb3a4a249caa940
+- iip-dpdk: b493a944c13135c38766003606e14d51ca61fc71
+- bench-iip: a93f859d2ca35a93b8891cba14f9d8d2eacea17f
+
 ### multi-core server performance
 
 - client (iip and DPDK)
