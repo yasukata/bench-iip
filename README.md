@@ -725,7 +725,7 @@ gcc -Werror -Wextra -Wall -O3 program_above.c -lpthread -lnuma -o app
 Then, the following executes the compiled program ```app```.
 
 ```
-ulimit -n unlimited; cnt=0; while [ $cnt -le 31 ]; do ./app -p 10000 -c 0-$cnt -g 1 -l 1; cnt=$(($cnt+1)); done
+ulimit -n unlimited; cnt=0; while [ $cnt -le 32 ]; do ./app -p $((10000+$cnt)) -c 0-$(($cnt == 0 ? 0 : $(($cnt-1)))) -g 1 -l 1; cnt=$(($cnt+2)); done
 ```
 
 - results:
