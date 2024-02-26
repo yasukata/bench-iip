@@ -1853,6 +1853,30 @@ Note: for this thread separation program and particularly for request-response w
 
 </details>
 
+- The command for the benchmark client.
+
+```
+cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-$(($cnt == 0 ? 0 : $(($cnt-1)))) --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.10 -- -s 10.100.0.20 -p 10000 -g 1 -t 5 -c 1 -d 1 -l 1 2>&1 | tee -a ./result.txt; cnt=$(($cnt+2)); done
+```
+
+- The command for the benchmark server with the split model.
+
+```
+cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./sub/a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1 -- -b 1 -c 2 -n 1; cnt=$(($cnt+2)); done
+```
+
+- The command for the benchmark server with the merge model.
+
+```
+cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./sub/a.out -n 2 -l 0-1 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1 -- -b 32 -c 0-1 -n 2 -e 100; cnt=$(($cnt+2)); done
+```
+
+- The command for the benchmark server with the unified model.
+
+```
+cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-1 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1; cnt=$(($cnt+2)); done
+```
+
 ## performance numbers of other TCP/IP stacks
 
 We show rough performance numbers of other TCP/IP stacks.
