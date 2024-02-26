@@ -772,8 +772,190 @@ cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 - note
 
-In the "all" case, the tx side leverages NIC offloading features for TSO and checksum along with zero-copy transmission, and the rx side activates the NIC offloading features of LRO and checksum.
-For the "w/o TSO" and "w/o TSO + w/o TX TCP checksum" cases, the tx side sets 2048 to the queue length.
+<details>
+
+<summary>changes made to disable TSO on the sender side</summary>
+
+```
+--- a/main.c
++++ b/main.c
+@@ -39,7 +39,7 @@
+ #include <rte_bus_pci.h>
+ #include <rte_thash.h>
+ 
+-#define NUM_RX_DESC (128)
++#define NUM_RX_DESC (2048)
+ #define NUM_TX_DESC NUM_RX_DESC
+ #define NUM_NETSTACK_PB (8192)
+ #define NUM_NETSTACK_TCP_CONN (512)
+@@ -705,6 +705,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX TCP TSO: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
+@@ -712,6 +713,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX UDP checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) {
+```
+
+</details>
+
+<details>
+
+<summary>changes made to disable TSO and checksum offload on the sender side</summary>
+
+```
+--- a/main.c
++++ b/main.c
+@@ -39,7 +39,7 @@
+ #include <rte_bus_pci.h>
+ #include <rte_thash.h>
+ 
+-#define NUM_RX_DESC (128)
++#define NUM_RX_DESC (2048)
+ #define NUM_TX_DESC NUM_RX_DESC
+ #define NUM_NETSTACK_PB (8192)
+ #define NUM_NETSTACK_TCP_CONN (512)
+@@ -669,6 +669,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (nic feature %lx udp-rss-all %lx)\n", dev_info.flow_type_rss_offloads, RTE_ETH_RSS_TCP);
+                                                } else printf("no\n"); /* TODO: software-based RSS */
+                                        }
++#if 0
+                                        {
+                                                printf("RX checksum: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_CHECKSUM) {
+@@ -676,6 +677,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("RX LRO: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
+@@ -691,6 +693,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX IPv4 checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+@@ -712,6 +715,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX UDP checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) {
+```
+
+</details>
+
+<details>
+
+<summary>changes made to disable zero-copy transmission on the sender side</summary>
+
+```
+--- a/main.c
++++ b/main.c
+@@ -684,6 +684,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (max lro pkt size %u)\n", nic_conf[portid].rxmode.max_lro_pkt_size);
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX multi-seg: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS) {
+@@ -691,6 +692,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX IPv4 checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+```
+
+</details>
+
+<details>
+
+<summary>changes made to disable LRO on the receiver side</summary>
+
+```
+--- a/main.c
++++ b/main.c
+@@ -676,6 +676,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("RX LRO: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
+@@ -684,6 +685,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (max lro pkt size %u)\n", nic_conf[portid].rxmode.max_lro_pkt_size);
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX multi-seg: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS) {
+```
+
+</details>
+
+<details>
+
+<summary>changes made to disable checksum offload on the receiver side</summary>
+
+```
+--- a/main.c
++++ b/main.c
+@@ -669,6 +669,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (nic feature %lx udp-rss-all %lx)\n", dev_info.flow_type_rss_offloads, RTE_ETH_RSS_TCP);
+                                                } else printf("no\n"); /* TODO: software-based RSS */
+                                        }
++#if 0
+                                        {
+                                                printf("RX checksum: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_CHECKSUM) {
+@@ -676,6 +677,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("RX LRO: ");
+                                                if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
+@@ -691,6 +693,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX IPv4 checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+@@ -705,6 +708,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX TCP TSO: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
+```
+
+</details>
 
 - results:
 
