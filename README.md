@@ -997,6 +997,14 @@ numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i
 
 ## separate threads for networking and app logic
 
+Potentially, there are three CPU core assignment models which we call ***split***, ***merge***, and ***unified***, respectively.
+
+- The split model runs the networking logic and the application logic on two different threads, and dedicates a CPU core to each of the threads.
+- The merge model runs the networking logic and the application logic on two different threads similarly to the first model, but executes the two threads on the same CPU core.
+- The unified model executes the networking and application logic on the same thread.
+
+The following program instantiates sub threads, besides the threads launched by an I/O subsystem such as DPDK, to execute the application logic implemented in bench-iip for testing the split and merge models.
+
 Please save the following program as ```bench-iip/sub/main.c```.
 
 <details>
