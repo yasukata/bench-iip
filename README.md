@@ -2073,6 +2073,10 @@ cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -l 0-1 --proc-type=primary --file-prefix=pmd1 --allow 17:00.0 -- -a 0,10.100.0.20 -- -p 10000 -g 1 -l 1; cnt=$(($cnt+2)); done
 ```
 
+- results:
+
+<img src="https://raw.githubusercontent.com/yasukata/img/master/iip/multicore/models.svg" width="500px">
+
 ## performance numbers of other TCP/IP stacks
 
 We show rough performance numbers of other TCP/IP stacks.
