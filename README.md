@@ -260,6 +260,9 @@ cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 <details>
 <summary>please click here to show the changes made for disabling the checksum offload feature of the NIC</summary>
+
+```iip-dpdk/main.c```
+
 ```diff
 --- a/main.c
 +++ b/main.c
@@ -296,8 +299,8 @@ cnt=0; while [ $cnt -le 32 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
                                                 printf("TX TCP TSO: ");
                                                 if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
 ```
-</details>
 
+</details>
 
 - server (Linux)
 
@@ -780,9 +783,36 @@ cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 <details>
 
+<summary>changes made to disable zero-copy transmission on the sender side</summary>
+
+```diff
+--- a/main.c
++++ b/main.c
+@@ -684,6 +684,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok (max lro pkt size %u)\n", nic_conf[portid].rxmode.max_lro_pkt_size);
+                                                } else printf("no\n");
+                                        }
++#if 0
+                                        {
+                                                printf("TX multi-seg: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS) {
+@@ -691,6 +692,7 @@ static int __iosub_main(int argc, char *const *argv)
+                                                        printf("ok\n");
+                                                } else printf("no\n");
+                                        }
++#endif
+                                        {
+                                                printf("TX IPv4 checksum: ");
+                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
+```
+
+</details>
+
+<details>
+
 <summary>changes made to disable TSO on the sender side</summary>
 
-```
+```diff
 --- a/main.c
 +++ b/main.c
 @@ -39,7 +39,7 @@
@@ -818,7 +848,7 @@ cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 <summary>changes made to disable TSO and checksum offload on the sender side</summary>
 
-```
+```diff
 --- a/main.c
 +++ b/main.c
 @@ -39,7 +39,7 @@
@@ -868,36 +898,9 @@ cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 <details>
 
-<summary>changes made to disable zero-copy transmission on the sender side</summary>
-
-```
---- a/main.c
-+++ b/main.c
-@@ -684,6 +684,7 @@ static int __iosub_main(int argc, char *const *argv)
-                                                        printf("ok (max lro pkt size %u)\n", nic_conf[portid].rxmode.max_lro_pkt_size);
-                                                } else printf("no\n");
-                                        }
-+#if 0
-                                        {
-                                                printf("TX multi-seg: ");
-                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS) {
-@@ -691,6 +692,7 @@ static int __iosub_main(int argc, char *const *argv)
-                                                        printf("ok\n");
-                                                } else printf("no\n");
-                                        }
-+#endif
-                                        {
-                                                printf("TX IPv4 checksum: ");
-                                                if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) {
-```
-
-</details>
-
-<details>
-
 <summary>changes made to disable LRO on the receiver side</summary>
 
-```
+```diff
 --- a/main.c
 +++ b/main.c
 @@ -676,6 +676,7 @@ static int __iosub_main(int argc, char *const *argv)
@@ -924,7 +927,7 @@ cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 
 <summary>changes made to disable checksum offload on the receiver side</summary>
 
-```
+```diff
 --- a/main.c
 +++ b/main.c
 @@ -669,6 +669,7 @@ static int __iosub_main(int argc, char *const *argv)
@@ -966,34 +969,6 @@ cnt=0; while [ $cnt -le 20 ]; do sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/li
 - results:
 
 <img src="https://raw.githubusercontent.com/yasukata/img/master/iip/bulk/large.svg" width="500px">
-
-### cache statistics
-
-We can have cache-relevant statistics by, in another console/terminal, executing the following command during the benchmark execution.
-
-```
-sudo pqos -m all:0-31 2>&1 | tee -a pqos-output.txt
-```
-
-The following extracts, from the entire pqos output, the result for the second that is two seconds before the benchmark execution completes:
-
-for 32 cores
-
-```
-ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" 'BEGIN{ pcnt = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 < pcnt) { print $n; }; pcnt += 1; }; }'; done
-```
-
-for CPU core 0
-
-```
-ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" 'BEGIN{ pcnt = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 < pcnt) { print $n; }; pcnt += 1; }; }'|sort|awk '{ if (NR == 1) { print $n; exit } }'; done
-```
-
-get average of 32 cores
-
-```
-numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" -v numcore=$numcore 'BEGIN{ pcnt = 0; ipc = 0; missk = 0; util = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 + (32 - numcore) < pcnt) { ipc += $2; missk += $3; util += $4; }; pcnt += 1; }; } END{ print ipc / numcore ", " missk /numcore ", " util / numcore }'; numcore=$(($numcore+1)); done
-```
 
 ## separate threads for networking and app logic
 
@@ -2731,6 +2706,34 @@ sudo LD_LIBRARY_PATH=./iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 2 -
 Caladan's throughput with this 14 ```runtime_kthreads``` setup was  9708941 requests/sec and its 99th percentile latency was 72.881 us.
 
 # appendix
+
+## cache statistics
+
+We can have cache-relevant statistics by, in another console/terminal, executing the following command during the benchmark execution.
+
+```
+sudo pqos -m all:0-31 2>&1 | tee -a pqos-output.txt
+```
+
+The following extracts, from the entire pqos output, the result for the second that is two seconds before the benchmark execution completes:
+
+for 32 cores
+
+```
+ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" 'BEGIN{ pcnt = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 < pcnt) { print $n; }; pcnt += 1; }; }'; done
+```
+
+for CPU core 0
+
+```
+ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" 'BEGIN{ pcnt = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 < pcnt) { print $n; }; pcnt += 1; }; }'|sort|awk '{ if (NR == 1) { print $n; exit } }'; done
+```
+
+get average of 32 cores
+
+```
+numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" -v numcore=$numcore 'BEGIN{ pcnt = 0; ipc = 0; missk = 0; util = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 + (32 - numcore) < pcnt) { ipc += $2; missk += $3; util += $4; }; pcnt += 1; }; } END{ print ipc / numcore ", " missk /numcore ", " util / numcore }'; numcore=$(($numcore+1)); done
+```
 
 ## AF_XDP-based backend
 
