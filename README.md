@@ -2155,7 +2155,7 @@ sudo LD_LIBRARY_PATH=./dpdk/install/lib/x86_64-linux-gnu ./app -l 0 --proc-type=
 
 <summary>please click here to see changes made for this test</summary>
 
-A build-relevant file is changed to involve the mlx5 driver.
+A build-relevant file in the seastar directory is changed to involve the mlx5 driver.
 
 ```diff
 --- a/cmake/Finddpdk.cmake
@@ -2212,6 +2212,20 @@ A build-relevant file is changed to involve the mlx5 driver.
      dpdk::pmd_nfp
 ```
 
+A build config file in the seastar/dpdk directory is also changed.
+
+```diff
+--- a/config/common_base
++++ b/config/common_base
+@@ -343,7 +343,7 @@ CONFIG_RTE_LIBRTE_MLX4_DEBUG=n
+ # Compile burst-oriented Mellanox ConnectX-4, ConnectX-5,
+  # ConnectX-6 & Bluefield (MLX5) PMD
+   #
+   -CONFIG_RTE_LIBRTE_MLX5_PMD=n
+   +CONFIG_RTE_LIBRTE_MLX5_PMD=y
+    CONFIG_RTE_LIBRTE_MLX5_DEBUG=n
+```
+
 We modify the memcached application to use it as a simple TCP ping-pong server; after the change, the server always return "A" to a TCP message without running the memcached-specific event handler.
 
 ```diff
@@ -2231,6 +2245,12 @@ We modify the memcached application to use it as a simple TCP ping-pong server; 
          _parser.init();
          return in.consume(_parser).then([this, &out] () -> future<> {
              switch (_parser._state) {
+```
+
+The configure command used.
+
+```
+./configure.py --mode=release --enable-dpdk --without-tests --without-demos
 ```
 
 In the file ```build/release/build.ninja```, ```-libverbs -lmlx5 -lmnl``` has to be added to ```LINK_LIBRARIES``` like as follows.
