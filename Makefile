@@ -7,6 +7,7 @@ else ifeq ($(shell $(CC) -v 2>&1 | grep "clang" 2>&1 | xargs -n 1 test -z && ech
 endif
 CFLAGS += -Werror -Wextra -Wall
 CFLAGS += -DIOSUB_MAIN_C=$(IOSUB_DIR)/main.c
+CFLAGS += $(APP_EXTRA_CFLAGS)
 
 OSNAME = $(shell uname -s)
 
@@ -14,6 +15,8 @@ ifeq ($(OSNAME),Linux)
 LDFLAGS += -lnuma
 else ifeq ($(OSNAME),FreeBSD)
 endif
+
+LDFLAGS += $(APP_EXTRA_LDFLAGS)
 
 C_OBJS = main.o
 
