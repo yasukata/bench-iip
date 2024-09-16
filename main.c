@@ -104,12 +104,20 @@ static uint64_t BENCH_IIP_NOW(void *opaque)
 	return (((uint64_t) t[0] << 32) + (uint64_t) t[1]) * 1000000000UL + (uint64_t) t[2];
 }
 
+#ifndef MAX_THREAD
 #define MAX_THREAD (256)
+#endif
+#ifndef MAX_PAYLOAD_LEN
 #define MAX_PAYLOAD_LEN (63488)
+#endif
 
+#ifndef MAX_PAYLOAD_PKT_CNT
 #define MAX_PAYLOAD_PKT_CNT (2048)
+#endif
 
+#ifndef NUM_MONITOR_LATENCY_RECORD
 #define NUM_MONITOR_LATENCY_RECORD (5000000UL)
+#endif
 
 #ifndef __APP_PRINTF
 #define __APP_PRINTF printf
@@ -225,7 +233,9 @@ static void __tcp_send_content(void *mem, void *handle, struct tcp_opaque *to, u
 	}
 }
 
+#ifndef MAX_PORT_CNT
 #define MAX_PORT_CNT (1024)
+#endif
 
 static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
 {
