@@ -2823,6 +2823,202 @@ The second part of the arguments are the same as the one shown in the [previous 
 
 One important point in the command above is to use ```ethtool``` to configure the number of NIC queues to be the same as the number of CPU cores used by the bench-iip program that is specified through the ```-l``` option; this is necessary because this benchmark program uses one CPU core to monitor one NIC queue. Therefore, if you use, for example, two CPU cores by specifying ```-l 0-1```, please ```sudo ethtool -L enp23s0f0np0 combined 2``` beforehand.
 
+### optional: sharing a network interface with the kernel-space network stack
+
+By default, when the AF_XDP setting is applied for a network interface, incoming packets bypass the kernel-space network stack and diretly go to the AF_XDP socket.
+
+This means that, by default, a user-space program leveraging AF_XDP and the kernel-space network stack cannot share the same network interface.
+
+We can avoid this limitation by installing our own eBPF program that steers specific packets, for example, destinated to a particular TCP port to an AF_XDP socket.
+
+To apply this setting, please first make a directory; this time, we name it ```af_xdp-bpf```.
+
+```
+mkdir af_xdp-bpf
+```
+
+```
+cd af_xdp-bpf
+```
+
+Then, please save the following as a file named ```main.bpf.c```; this forward packets destinated to TCP port 10000 to AF_XDP sockets and the other packets are passed to the kernel-space network stack, and to change the TCP port number from 10000 to another one, please edit ```bpf_htons(10000)```.
+
+<details>
+<summary>please click here to show the program</summary>
+
+```c
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
+struct {
+	__uint(type, BPF_MAP_TYPE_XSKMAP);
+	__uint(max_entries, 64);
+	__uint(key_size, sizeof(int));
+	__uint(value_size, sizeof(int));
+} xsks_map SEC(".maps");
+SEC("prog") int xsk_prog(struct xdp_md *ctx)
+{
+	/* length check */
+	if ((long) ctx->data + 38 < (long) ctx->data_end) {
+		/* ether type is ip4 */
+		if (*((__be16 *)((long) ctx->data + 12)) == bpf_htons(0x0800)) {
+			/* tcp */
+			if (*((__u8 *)((long) ctx->data + 23)) == 6) {
+				/* port */
+				if (*((__be16 *)((long) ctx->data + 36)) == bpf_htons(10000)) {
+					return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_PASS);
+				}
+			}
+		}
+	}
+	return XDP_PASS;
+}
+```
+
+</details>
+
+Please save the following as a file named ```Makefile```.
+
+<details>
+<summary>please click here to show the program</summary>
+
+```Makefile
+PROGS = a.out
+
+CC = clang
+LD = llc
+
+CFLAGS = -g -O3 -emit-llvm
+LDFLAGS = -march=bpf -filetype=obj
+
+C_SRCS = main.bpf.c
+OBJS = $(C_SRCS:.c=.o)
+
+CLEANFILES = $(PROGS) *.o
+
+.PHONY: all
+	all: $(PROGS)
+
+$(PROGS): $(OBJS)
+	$(LD) -o $@ $^ $(LDFLAGS)
+
+clean:
+	-@rm -rf $(CLEANFILES)
+```
+
+</details>
+
+Afterward, please type the following to generate a BPF program binary named ```a.out```.
+
+```
+make
+```
+
+The following command installs the BPF program, ```a.out```, to the network interface identified as ```enp49s0f0```; please change ```enp49s0f0``` according to the environment.
+
+```
+sudo ip link set dev enp49s0f0 xdp obj a.out
+```
+
+Then, please go back to the ```bench-iip``` directory.
+
+```
+cd ../
+```
+
+Please apply the following changes to ```iip-af_xdp/main.c```.
+
+The points are:
+- include ```bpf/bpf.h```
+- configure ```XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD``` for ```libbpf_flags```
+- associate AF_XDP sockets, created by ```iip-af_xdp/main.c```, with a BPF map named ```xsks_map``` which is instantiated by ```main.bpf.c``` shown above
+
+<details>
+<summary>please click here to show the changes</summary>
+
+```diff
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -35,6 +35,7 @@
+ #ifdef XSK_HEADER_LIBXDP
+ #include <xdp/xsk.h>
+ #endif
++#include <bpf/bpf.h>
+ 
+ #define __IOSUB_MAX_CORE (256)
+ 
+@@ -742,7 +743,7 @@ static void *__thread_fn(void *__data)
+                                                        struct xsk_socket_config cfg = {
+                                                                .rx_size = NUM_RX_DESC,
+                                                                .tx_size = NUM_TX_DESC,
+-                                                               .libbpf_flags = 0,
++                                                               .libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
+                                                                .xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE,
+                                                                .bind_flags = XDP_USE_NEED_WAKEUP | XDP_ZEROCOPY /* | XDP_USE_SG */,
+                                                        };
+@@ -763,6 +764,40 @@ static void *__thread_fn(void *__data)
+                                                        }
+                                                }
+ 
++                                               {
++                                                       unsigned int id = 0, done = 0;
++                                                       while (1) {
++                                                               {
++                                                                       int err = bpf_map_get_next_id(id, &id);
++                                                                       assert(!err);
++                                                               }
++                                                               {
++                                                                       int fd = bpf_map_get_fd_by_id(id);
++                                                                       assert(fd >= 0);
++                                                                       {
++                                                                               struct bpf_map_info info = { 0 };
++                                                                               uint32_t len = sizeof(info);
++                                                                               {
++                                                                                       int err = bpf_obj_get_info_by_fd(fd, &info, &len);
++                                                                                       assert(!err);
++                                                                               }
++                                                                               if (strlen("xsks_map") == strlen(info.name) &&
++                                                                                               !strncmp("xsks_map", info.name, strlen("xsks_map"))) {
++                                                                                       int key = ti->id, val = xsk_socket__fd(xsk);
++                                                                                       {
++                                                                                               int err = bpf_map_update_elem(fd, &key, &val, 0);
++                                                                                               assert(!err);
++                                                                                               done = 1;
++                                                                                               break;
++                                                                                       }
++                                                                               } else
++                                                                                       close(fd);
++                                                                       }
++                                                               }
++                                                       }
++                                                       assert(done);
++                                               }
++
+                                                setup_core_id++;
+ 
+                                                io_opaque[ti->id].af_xdp.xsk = xsk;
+```
+
+</details>
+
+Afterward, please recompile the ```bench-iip``` program.
+
+```
+IOSUB_DIR=./iip-af_xdp make clean
+```
+```
+IOSUB_DIR=./iip-af_xdp make
+```
+
+After this setting, supposedly, this ```bench-iip``` program can share a network interface with the kernel-space network stack; only packets for TCP port 10000 are handled by ```bench-iip```.
+
+Note that the installed BPF program can be uninstalled by the following command.
+
+```
+sudo ip link set dev enp49s0f0 xdp off
+```
+
 ## netmap-based backend
 
 ### download source code necessary for the netmap-based backend
