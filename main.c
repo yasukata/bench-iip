@@ -350,7 +350,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 									assert(0);
 									break;
 								}
-																break;
+								break;
 							}
 						}
 					}
