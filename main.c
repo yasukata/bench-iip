@@ -252,7 +252,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 						{
 							uint16_t i;
 							for (i = 0; i < MAX_PORT_CNT; i++) {
-								uint16_t port = helper_ip4_get_connection_affinity(6 /* tcp */,
+								uint16_t port = helper_ip4_get_connection_affinity(ad->proto_id,
 										ip4_be, htons(i),
 										ad->remote_ip4_addr_be, ad->l4_port_be,
 										opaque);
