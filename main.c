@@ -172,7 +172,7 @@ struct app_data {
 #else
 	_Atomic uint64_t active_conn;
 #endif
-	uint16_t tcp_port_affinty_map[0xffff];
+	uint16_t tcpudp_port_affinty_map[0xffff];
 	uint64_t dbg_prev_print;
 	struct thread_data *tds[MAX_THREAD];
 	uint32_t remote_ip4_addr_be;
@@ -257,11 +257,11 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 										ad->remote_ip4_addr_be, ad->l4_port_be,
 										opaque);
 								if (port != UINT16_MAX)
-									ad->tcp_port_affinty_map[i] = port;
+									ad->tcpudp_port_affinty_map[i] = port;
 								else {
 									assert(!i);
 									__APP_PRINTF("RSS not supported\n"); fflush(stdout);
-									ad->tcp_port_affinty_map[i] = 0;
+									ad->tcpudp_port_affinty_map[i] = 0;
 									break;
 								}
 							}
@@ -303,7 +303,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 				for (i = 0; i < ad->concurrency; i++) {
 					uint16_t j;
 					for (j = 1 /* minimum local port number */; j < 0xffff; j++) {
-						if (ad->tcp_port_affinty_map[j] == td->core_id) {
+						if (ad->tcpudp_port_affinty_map[j] == td->core_id) {
 							if (!(td->tcp.used_port_bm[j >> 3] & (1 << (j & 7)))) {
 								td->tcp.used_port_bm[j >> 3] |= (1 << (j & 7));
 								switch (ad->proto_id) {
