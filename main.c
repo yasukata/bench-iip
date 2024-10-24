@@ -336,6 +336,8 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 										{
 											uint16_t k;
 											for (k = 0; k < ad->io_depth; k++) {
+												void *m;
+												assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
 												assert(!iip_udp_send(mem,
 															mac, ip4_be, htons(j),
 															ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
