@@ -183,7 +183,7 @@ struct app_data {
 	uint32_t concurrency;
 	uint8_t proto_id;
 	uint8_t app_mode;
-	uint8_t io_depth;
+	uint16_t io_depth;
 	uint64_t pacing_pps;
 	uint64_t duration;
 	uint64_t start_time;
