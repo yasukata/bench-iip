@@ -138,6 +138,9 @@ struct thread_data {
 		uint8_t used_port_bm[0xffff / 8];
 	} tcp;
 	struct {
+		uint16_t var[1];
+	} udp;
+	struct {
 		uint8_t idx;
 		struct {
 			uint64_t rx_pkt;
@@ -323,9 +326,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 									}
 									break;
 								case 17:
-									{
-										void *m;
-										assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);;
+									if (ad->app_mode == 1) { /* ping-pong */
 										IIP_OPS_DEBUG_PRINTF("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
 												td->core_id,
 												(uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff),
@@ -359,8 +360,9 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 			}
 			break;
 		case 3:
-			if (ad->pacing_pps) {
-				if (td->tcp.conn_list_cnt) {
+			switch (ad->proto_id) {
+			case 6:
+				if (ad->pacing_pps && td->tcp.conn_list_cnt) {
 					uint16_t i;
 					for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 						if (td->tcp.conn_list[i]->sent != td->payload.cnt) {
@@ -372,6 +374,34 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 						}
 					}
 				}
+				break;
+			case 17:
+				if (ad->app_mode == 2 && ad->remote_ip4_addr_be) { /* burst */
+					uint16_t i;
+					for (i = 0; i < ad->io_depth; i++) {
+						uint32_t j;
+						for (j = 0; j < 0xffff; j++) {
+							uint16_t port = td->udp.var[0]++;
+							if (td->udp.var[0] == 0xffff)
+								td->udp.var[0] = 0;
+							if (ad->tcpudp_port_affinty_map[port] == td->core_id) {
+								void *m;
+								assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
+								assert(!iip_udp_send(mem,
+											mac, ip4_be, htons(port),
+											ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
+											m, opaque));
+								td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
+								td->monitor.counter[td->monitor.idx].tx_pkt++;
+								break;
+							}
+						}
+						assert(j != 0xffff);
+					}
+				}
+				break;
+			default:
+				break;
 			}
 		default:
 			break;
@@ -767,11 +797,12 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
 
 static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
 {
+
 	void **opaque_array = (void **) opaque;
 	{
 		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		{
+		if (ad->app_mode == 1) { /* ping-pong */
 			void *_m;
 			assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
 			assert(!iip_udp_send(mem,
