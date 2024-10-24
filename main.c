@@ -379,24 +379,16 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 				if (ad->app_mode == 2 && ad->remote_ip4_addr_be) { /* burst */
 					uint16_t i;
 					for (i = 0; i < ad->io_depth; i++) {
-						uint32_t j;
-						for (j = 0; j < 0xffff; j++) {
-							uint16_t port = td->udp.var[0]++;
-							if (td->udp.var[0] == 0xffff)
-								td->udp.var[0] = 0;
-							if (ad->tcpudp_port_affinty_map[port] == td->core_id) {
-								void *m;
-								assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
-								assert(!iip_udp_send(mem,
-											mac, ip4_be, htons(port),
-											ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
-											m, opaque));
-								td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
-								td->monitor.counter[td->monitor.idx].tx_pkt++;
-								break;
-							}
-						}
-						assert(j != 0xffff);
+						void *m;
+						assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
+						assert(!iip_udp_send(mem,
+									mac, ip4_be, htons(td->udp.var[0]),
+									ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
+									m, opaque));
+						if (++td->udp.var[0] == 0xffff)
+							td->udp.var[0] = 0;
+						td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
+						td->monitor.counter[td->monitor.idx].tx_pkt++;
 					}
 				}
 				break;
