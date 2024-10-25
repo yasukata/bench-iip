@@ -2755,6 +2755,382 @@ get average of 32 cores
 numcore=1; ta=(`cat result.txt|grep "sec has passed"|awk '{ print $2 }'`); for i in ${ta[@]}; do tac pqos-output.txt|grep -v NOTE|grep -v CAT|grep -v CORE|awk -v timestr="$i" -v numcore=$numcore 'BEGIN{ pcnt = 0; ipc = 0; missk = 0; util = 0; } { num = match($0, timestr); if (0 < num) { pcnt = 1; }; if (0 < pcnt && pcnt < 67) { if (34 + (32 - numcore) < pcnt) { ipc += $2; missk += $3; util += $4; }; pcnt += 1; }; } END{ print ipc / numcore ", " missk /numcore ", " util / numcore }'; numcore=$(($numcore+1)); done
 ```
 
+## packet generator program
+
+The following program is a simple packet generator program mainly made for performance measurement of I/O subsystems used by ```bench-iip```.
+
+**WARNING**: this packet generator program transmits packets at a high rate and may cause trouble to systems sharing the network with this packet generator program, therefore, please try this packet generator program only if you understand the consequences of your actions.
+
+To compile the packet generator program, please first enter the top directory of this repository.
+
+```
+cd bench-iip
+```
+
+Then, please make a directory named ```pkt-gen```.
+
+```
+mkdir pkt-gen
+```
+
+Please enter the ```pkt-gen``` directory.
+
+```
+cd pkt-gen
+```
+
+Please seve the following program as a file named ```main.c```.
+
+
+<details>
+
+<summary>please click here to show main.c</summary>
+
+```c
+#define __app_thread_init   __o__app_thread_init
+#define __app_init	    __o__app_init
+#pragma push_macro("IOSUB_MAIN_C")
+#undef IOSUB_MAIN_C
+#define IOSUB_MAIN_C pthread.h
+static int __iosub_main(int argc, char *const *argv);
+#define IIP_MAIN_C "./iip_main.c"
+#include "../main.c"
+#undef IOSUB_MAIN_C
+#pragma pop_macro("IOSUB_MAIN_C")
+#undef __app_thread_init
+#undef __app_init
+
+struct __pkt_gen_addr {
+	uint8_t mac[6];
+	uint32_t ip4_be;
+	uint16_t l4_port_be;
+};
+
+#ifndef __PKT_GEN_PKT_CNT
+#define __PKT_GEN_PKT_CNT (128)
+#endif
+#if MAX_PAYLOAD_PKT_CNT < __PKT_GEN_PKT_CNT
+#error "MAX_PAYLOAD_PKT_CNT < __PKT_GEN_PKT_CNT"
+#endif
+
+static struct __pkt_gen_addr __pkt_gen_src_addrs[__PKT_GEN_PKT_CNT] = { 0 };
+static struct __pkt_gen_addr __pkt_gen_dst_addrs[__PKT_GEN_PKT_CNT] = { 0 };
+static uint16_t __pkt_gen_src_addr_cnt = 0;
+static uint16_t __pkt_gen_dst_addr_cnt = 0;
+static uint16_t __pkt_gen_payload_len = 1;
+static uint16_t __pkt_gen_batch_size = 0;
+
+static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
+	struct thread_data *td;
+	assert((td = (struct thread_data *) mem_alloc_local(sizeof(struct thread_data))) != NULL);
+	memset(td, 0, sizeof(struct thread_data));
+	td->core_id = core_id;
+	{
+		uint16_t i;
+		for (i = 0; i < (__pkt_gen_src_addr_cnt < __pkt_gen_dst_addr_cnt ? __pkt_gen_dst_addr_cnt : __pkt_gen_src_addr_cnt); i++) {
+			void *out_pkt = iip_ops_pkt_alloc(opaque);
+			assert(out_pkt != NULL);
+			iip_ops_l2_hdr_craft(out_pkt,
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac,
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac,
+					__iip_htons(0x0800),
+					opaque);
+			{
+				struct iip_ip4_hdr *ip4h = PB_IP4(iip_ops_pkt_get_data(out_pkt, opaque));
+				ip4h->vl = (4 /* ver ipv4 */ << 4) | (sizeof(struct iip_ip4_hdr) / 4 /* len in octet */);
+				ip4h->len_be = __iip_htons((ip4h->vl & 0x0f) * 4 + sizeof(struct iip_udp_hdr) + __pkt_gen_payload_len);
+				ip4h->tos = 0;
+				ip4h->id_be = 0; /* no ip4 fragment */
+				ip4h->off_be = 0; /* no ip4 fragment */
+				ip4h->ttl = IIP_CONF_IP4_TTL;
+				ip4h->proto = 17; /* udp */
+				ip4h->src_be = __pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].ip4_be;
+				ip4h->dst_be = __pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].ip4_be;
+				ip4h->csum_be = 0;
+				{
+					uint8_t *_b[1]; _b[0] = (uint8_t *) ip4h;
+					{
+						uint16_t _l[1]; _l[0] = (uint16_t) ((ip4h->vl & 0x0f) * 4);
+						ip4h->csum_be = __iip_htons(__iip_netcsum16(_b, _l, 1, 0));
+					}
+				}
+				__iip_memset(&((uint8_t *) iip_ops_pkt_get_data(out_pkt, opaque))[iip_ops_l2_hdr_len(out_pkt, opaque) + (ip4h->vl & 0x0f) * 4 + sizeof(struct iip_udp_hdr)], 'A', __pkt_gen_payload_len);
+				{
+					struct iip_udp_hdr *udph = PB_UDP(iip_ops_pkt_get_data(out_pkt, opaque));
+					udph->src_be = __pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].l4_port_be;
+					udph->dst_be = __pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].l4_port_be;
+					udph->len_be = __iip_htons(sizeof(struct iip_udp_hdr) + __pkt_gen_payload_len);
+					udph->csum_be = 0;
+					if (!iip_ops_nic_feature_offload_udp_tx_checksum(opaque)) { /* udp csum */
+						struct iip_l4_ip4_pseudo_hdr _pseudo;
+						_pseudo.ip4_src_be = __pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].ip4_be;
+						_pseudo.ip4_dst_be = __pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].ip4_be;
+						_pseudo.pad = 0;
+						_pseudo.proto = 17;
+						_pseudo.len_be = __iip_htons(sizeof(struct iip_udp_hdr) + __pkt_gen_payload_len);
+						{
+							uint8_t *_b[3]; _b[0] = (uint8_t *) &_pseudo; _b[1] = (uint8_t *) udph; _b[2] = (uint8_t *) &((uint8_t *) iip_ops_pkt_get_data(out_pkt, opaque))[iip_ops_l2_hdr_len(out_pkt, opaque) + (ip4h->vl & 0x0f) * 4 + sizeof(struct iip_udp_hdr)];
+							{
+								uint16_t _l[3]; _l[0] = sizeof(_pseudo); _l[1] = sizeof(struct iip_udp_hdr); _l[2] = __pkt_gen_payload_len;
+								udph->csum_be = __iip_htons(__iip_netcsum16(_b, _l, 3, 0));
+							}
+						}
+					}
+					iip_ops_pkt_set_len(out_pkt, iip_ops_l2_hdr_len(out_pkt, opaque) + (ip4h->vl & 0x0f) * 4 + __iip_ntohs(udph->len_be), opaque);
+				}
+			}
+			printf("pkt[%hu] src %02x:%02x:%02x:%02x:%02x:%02x %u.%u.%u.%u %hu dst %02x:%02x:%02x:%02x:%02x:%02x %u.%u.%u.%u %hu (%u bytes)\n",
+					i,
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac[0],
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac[1],
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac[2],
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac[3],
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac[4],
+					__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].mac[5],
+					(__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].ip4_be >>  0) & 0xff,
+					(__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].ip4_be >>  8) & 0xff,
+					(__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].ip4_be >> 16) & 0xff,
+					(__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].ip4_be >> 24) & 0xff,
+					ntohs(__pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].l4_port_be),
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac[0],
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac[1],
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac[2],
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac[3],
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac[4],
+					__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].mac[5],
+					(__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].ip4_be >>  0) & 0xff,
+					(__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].ip4_be >>  8) & 0xff,
+					(__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].ip4_be >> 16) & 0xff,
+					(__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].ip4_be >> 24) & 0xff,
+					ntohs(__pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].l4_port_be),
+					iip_ops_pkt_get_len(out_pkt, opaque));
+			td->payload.pkt[i] = out_pkt;
+		}
+		if (i) {
+			unsigned int j;
+			for (j = i; j < __PKT_GEN_PKT_CNT; j++) {
+				void *out_pkt = iip_ops_pkt_alloc(opaque);
+				assert(out_pkt);
+				memcpy(iip_ops_pkt_get_data(out_pkt, opaque), iip_ops_pkt_get_data(td->payload.pkt[j % i], opaque), iip_ops_pkt_get_len(td->payload.pkt[j % i], opaque));
+				iip_ops_pkt_set_len(out_pkt, iip_ops_pkt_get_len(td->payload.pkt[j % i], opaque), opaque);
+				td->payload.pkt[j] = out_pkt;
+			}
+		}
+	}
+	ad->tds[td->core_id] = td;
+	return td;
+	{ /* unused */
+		(void) workspace;
+		(void) __o__app_thread_init;
+	}
+}
+
+static void *__app_init(int argc, char *const *argv)
+{
+	struct app_data *ad = (struct app_data *) mem_alloc_local(sizeof(struct app_data));
+	assert(ad);
+	memset(ad, 0, sizeof(struct app_data));
+	{ /* parse arguments */
+		int ch, cnt = 0;
+		while ((ch = getopt(argc, argv, "b:d:l:s:")) != -1) {
+			cnt += 2;
+			switch (ch) {
+			case 'b':
+				sscanf(optarg, "%hu", &__pkt_gen_batch_size);
+				break;
+			case 'd':
+			case 's':
+				if (ch == 's')
+					assert(__pkt_gen_src_addr_cnt < __PKT_GEN_PKT_CNT);
+				else
+					assert(__pkt_gen_dst_addr_cnt < __PKT_GEN_PKT_CNT);
+				{ /* format: mac,ip,port (e.g., ab:cd:ef:01:23:45,192.168.0.1,10000 */
+					char tmpbuf[64] = { 0 };
+					size_t l = strlen(optarg);
+					assert(l < (sizeof(tmpbuf) - 1));
+					memcpy(tmpbuf, optarg, l);
+					{
+						size_t i, j = 0, c = 0;
+						for (i = 0; i < l; i++) {
+							if (tmpbuf[i] == ',' || i == l - 1) {
+								if (tmpbuf[i] == ',')
+									tmpbuf[i] = '\0';
+								switch (c) {
+								case 0:
+									if (ch == 's') {
+										sscanf(tmpbuf, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+												&__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].mac[0],
+												&__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].mac[1],
+												&__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].mac[2],
+												&__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].mac[3],
+												&__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].mac[4],
+												&__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].mac[5]);
+									} else {
+										sscanf(tmpbuf, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+												&__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].mac[0],
+												&__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].mac[1],
+												&__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].mac[2],
+												&__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].mac[3],
+												&__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].mac[4],
+												&__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].mac[5]);
+									}
+									break;
+								case 1:
+									if (ch == 's')
+										assert(inet_pton(AF_INET, &tmpbuf[j], &__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].ip4_be) == 1);
+									else
+										assert(inet_pton(AF_INET, &tmpbuf[j], &__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].ip4_be) == 1);
+									break;
+								case 2:
+									{
+										uint16_t port;
+										sscanf(&tmpbuf[j], "%hu", &port);
+										if (ch == 's')
+											__pkt_gen_src_addrs[__pkt_gen_src_addr_cnt].l4_port_be = htons(port);
+										else
+											__pkt_gen_dst_addrs[__pkt_gen_dst_addr_cnt].l4_port_be = htons(port);
+									}
+									break;
+								}
+								j = i + 1;
+								c++;
+							}
+						}
+						assert(c == 3);
+						if (ch == 's')
+							__pkt_gen_src_addr_cnt++;
+						else
+							__pkt_gen_dst_addr_cnt++;
+					}
+				}
+				break;
+			case 'l':
+				{
+					int err = sscanf(optarg, "%hu", &__pkt_gen_payload_len);
+					assert(err == 1);
+				}
+				break;
+			default:
+				break;
+			}
+		}
+	}
+	signal(SIGINT, sig_h);
+	if (__pkt_gen_batch_size) {
+		printf("sender mode\n");
+		printf("batch size %u\n", __pkt_gen_batch_size);
+		printf("payload len %u\n", __pkt_gen_payload_len);
+		assert(__pkt_gen_src_addr_cnt);
+		assert(__pkt_gen_dst_addr_cnt);
+	} else
+		printf("receiver mode\n");
+	return (void *) ad;
+	{ /* unused */
+		(void) __o__app_init;
+	}
+}
+
+#define M2S(s) _M2S(s)
+#define _M2S(s) #s
+#include M2S(IOSUB_MAIN_C)
+#undef _M2S
+#undef M2S
+
+static uint16_t iip_run(void *_mem, uint8_t mac[], uint32_t ip4_be, void *pkt[], uint16_t cnt, uint32_t *next_us, void *opaque)
+{
+	{ /* rx */
+		void **opaque_array = (void **) opaque;
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		{
+			uint16_t i;
+			for (i = 0; i < cnt; i++) {
+				(void) pkt;
+				td->monitor.counter[td->monitor.idx].rx_bytes += iip_ops_pkt_get_len(pkt[i], opaque);
+				td->monitor.counter[td->monitor.idx].rx_pkt++;
+				iip_ops_pkt_free(pkt[i], opaque);
+			}
+		}
+	}
+	{ /* tx */
+		void **opaque_array = (void **) opaque;
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		{
+			uint16_t i;
+			for (i = 0; i < __pkt_gen_batch_size; i++) {
+				void *_pkt = iip_ops_pkt_clone(td->payload.pkt[td->payload.cnt], opaque);
+				assert(_pkt != NULL);
+				if (++td->payload.cnt == __PKT_GEN_PKT_CNT)
+					td->payload.cnt = 0;
+				td->monitor.counter[td->monitor.idx].tx_bytes += iip_ops_pkt_get_len(_pkt, opaque);
+				td->monitor.counter[td->monitor.idx].tx_pkt++;
+				iip_ops_l2_push(_pkt, opaque);
+			}
+			if (__pkt_gen_batch_size)
+				*next_us = 0;
+		}
+	}
+	{ /* unused */
+		(void) _mem;
+		(void) mac;
+		(void) ip4_be;
+		(void) next_us;
+		(void) __o__iip_run;
+	}
+	return cnt;
+}
+```
+
+</details>
+
+Please seve the following program as a file named ```iip_main.c```.
+
+<details>
+
+<summary>please click here to show iip_main.c</summary>
+
+```c
+#define iip_run __o__iip_run
+#include "../iip/main.c"
+#undef iip_run
+static uint16_t iip_run(void *_mem, uint8_t mac[], uint32_t ip4_be, void *pkt[], uint16_t cnt, uint32_t *next_us, void *opaque);
+```
+
+</details>
+
+Supposedly, the following command generates an executable file named ```a.out```.
+
+```
+IOSUB_DIR=../iip-dpdk make -f ../Makefile
+```
+
+The following command launches the packet generator program with the receiver mode.
+
+```
+sudo LD_LIBRARY_PATH=../iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 31:00.0 -- -a 0,10.100.0.20
+```
+
+The following command launches the packet generator program with the sender mode; this sender mode transmits preallocated UDP packets as quick as possible.
+
+```
+sudo LD_LIBRARY_PATH=../iip-dpdk/dpdk/install/lib/x86_64-linux-gnu ./a.out -n 1 -l 0 --proc-type=primary --file-prefix=pmd1 --allow 31:00.0 -- -a 0,10.100.0.20 -- -s 00:00:00:00:00:00,10.100.0.20,1 -d ff:ff:ff:ff:ff:ff,255.255.255.255,1 -b 16 -l 22
+```
+
+This packet generator program accepts the following commandline options for the sender mode.
+
+- ```-b```: batch size for packet transmisison (if a value bigger than 0 is specified, the program works as a sender; otherwise, it works as a receiver)
+- ```-l```: udp payload length
+- ```-d```: specify the destination of generated packets in a format of MAC,IP,UDP-port
+- ```-s```: specify the source of generated packets in a format of MAC,IP,UDP-port
+
+The following executes ```make clean```.
+
+```
+IOSUB_DIR=../iip-dpdk make -f ../Makefile clean
+```
+
 ## AF_XDP-based backend
 
 This bench-iip program should work with an [AF_XDP-based backend](https://github.com/yasukata/iip-af_xdp).
