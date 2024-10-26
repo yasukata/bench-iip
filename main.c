@@ -523,17 +523,16 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 							}
 						}
 					}
-					{
-						if (td->tcp.conn_list_cnt) {
-							uint16_t i;
-							for (i = 0; i < td->tcp.conn_list_cnt; i++)
-								iip_tcp_close(mem, td->tcp.conn_list[i]->handle, opaque);
-						} else
-							td->should_stop = 1;
+					if (td->tcp.conn_list_cnt) {
+						uint16_t i;
+						for (i = 0; i < td->tcp.conn_list_cnt; i++)
+							iip_tcp_close(mem, td->tcp.conn_list[i]->handle, opaque);
 					}
 					td->close_state = 1;
 					break;
 				case 1:
+					if (!td->tcp.conn_list_cnt)
+						td->should_stop = 1;
 					break;
 				default:
 					break;
@@ -565,6 +564,7 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 			assert(td->payload.cnt < MAX_PAYLOAD_PKT_CNT);
 		}
 	}
+	td->tcp.used_port_bm[50000 /* remote shutdown */ >> 3] |= (1 << (50000 /* remote shutdown */ & 7)); /* allocate local port 50000 */
 	ad->tds[td->core_id] = td;
 	return td;
 	{ /* unused */
@@ -616,7 +616,7 @@ static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, vo
 		return 0;
 }
 
-static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m, void *opaque)
+static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	struct app_data *ad = (struct app_data *) opaque_array[1];
@@ -633,16 +633,6 @@ static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handl
 		void **opaque_array = (void **) opaque;
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
-	}
-	if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->dst_be == htons(50000 /* remote shutdown */)) {
-		time_t t = time(NULL);
-		struct tm lt;
-		localtime_r(&t, &lt);
-		__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
-				lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
-				lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
-		__app_close_posted = 1;
-		signal(SIGINT, SIG_DFL);
 	}
 	return (void *) to;
 }
@@ -662,10 +652,9 @@ static void *iip_ops_tcp_connected(void *mem, void *handle, void *m __attribute_
 			memset(to, 0, sizeof(struct tcp_opaque));
 			to->handle = handle;
 			td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
-			if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be == htons(50000 /* remote shutdown */)) {
-				__APP_PRINTF("remote stop request is handled\n");
-				__app_remote_stop_handled = 1;
-			} else {
+			if (PB_TCP(iip_ops_pkt_get_data(m, opaque))->src_be == htons(50000 /* remote shutdown */))
+				iip_tcp_close(mem, handle, opaque);
+			else {
 				uint16_t i;
 				for (i = 0; i < ad->io_depth; i++) {
 					__tcp_send_content(mem, handle, to, to->cur, 1, opaque);
@@ -761,6 +750,19 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
 {
 	void **opaque_array = (void **) opaque;
 	struct app_data *ad = (struct app_data *) opaque_array[1];
+	if (ntohs(peer_port_be) == 50000 /* remote shutdown */) {
+		__APP_PRINTF("remote stop request is handled\n");
+		__app_remote_stop_handled = 1;
+	} else if (ntohs(local_port_be) == 50000 /* remote shutdown */) {
+		time_t t = time(NULL);
+		struct tm lt;
+		localtime_r(&t, &lt);
+		__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
+				lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+				lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
+		__app_close_posted = 1;
+		signal(SIGINT, SIG_DFL);
+	}
 	{
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
@@ -773,8 +775,6 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
 				}
 			}
 		}
-		if (td->close_state == 1 && !td->tcp.conn_list_cnt)
-			td->should_stop = 1;
 	}
 	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --ad->active_conn);
 	{ /* unused */
