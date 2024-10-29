@@ -376,7 +376,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 				}
 				break;
 			case 17:
-				if (ad->app_mode == 2 && ad->remote_ip4_addr_be) { /* burst */
+				if (ad->app_mode == 2 && ad->remote_ip4_addr_be && !__app_close_posted) { /* burst */
 					uint16_t i;
 					for (i = 0; i < ad->io_depth; i++) {
 						void *m;
@@ -389,6 +389,8 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 							td->udp.var[0] = 0;
 						td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
 						td->monitor.counter[td->monitor.idx].tx_pkt++;
+						if (!ad->start_time)
+							ad->start_time = BENCH_IIP_NOW(opaque);
 					}
 				}
 				break;
