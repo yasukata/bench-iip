@@ -809,6 +809,8 @@ static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
 						_m, opaque));
 			td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
 			td->monitor.counter[td->monitor.idx].tx_pkt++;
+			if (!ad->start_time)
+				ad->start_time = BENCH_IIP_NOW(opaque);
 		}
 		td->monitor.counter[td->monitor.idx].rx_bytes += PB_UDP_PAYLOAD_LEN(iip_ops_pkt_get_data(m, opaque));
 		td->monitor.counter[td->monitor.idx].rx_pkt++;
