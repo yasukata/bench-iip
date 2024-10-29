@@ -874,6 +874,13 @@ static void __app_exit(void *app_global_opaque)
 					p50th, p90th, p99th, p999th
 			      ); fflush(stdout);
 		}
+	} else {
+		__APP_PRINTF("throughput rx %lu bps %lu pps, tx %lu bps %lu pps\n",
+				ad->rx_bytes_prev[0] * 8,
+				ad->rx_pps_prev[0],
+				ad->tx_bytes_prev[0] * 8,
+				ad->tx_pps_prev[0]
+		      ); fflush(stdout);
 	}
 	mem_free(app_global_opaque, sizeof(struct app_data));
 }
