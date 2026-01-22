@@ -2839,7 +2839,7 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 					__iip_htons(0x0800),
 					opaque);
 			{
-				struct iip_ip4_hdr *ip4h = PB_IP4(iip_ops_pkt_get_data(out_pkt, opaque));
+				struct iip_ip4_hdr *ip4h = PB_IP4(out_pkt);
 				ip4h->vl = (4 /* ver ipv4 */ << 4) | (sizeof(struct iip_ip4_hdr) / 4 /* len in octet */);
 				ip4h->len_be = __iip_htons((ip4h->vl & 0x0f) * 4 + sizeof(struct iip_udp_hdr) + __pkt_gen_payload_len);
 				ip4h->tos = 0;
@@ -2859,7 +2859,7 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 				}
 				__iip_memset(&((uint8_t *) iip_ops_pkt_get_data(out_pkt, opaque))[iip_ops_l2_hdr_len(out_pkt, opaque) + (ip4h->vl & 0x0f) * 4 + sizeof(struct iip_udp_hdr)], 'A', __pkt_gen_payload_len);
 				{
-					struct iip_udp_hdr *udph = PB_UDP(iip_ops_pkt_get_data(out_pkt, opaque));
+					struct iip_udp_hdr *udph = PB_UDP(out_pkt);
 					udph->src_be = __pkt_gen_src_addrs[i % __pkt_gen_src_addr_cnt].l4_port_be;
 					udph->dst_be = __pkt_gen_dst_addrs[i % __pkt_gen_dst_addr_cnt].l4_port_be;
 					udph->len_be = __iip_htons(sizeof(struct iip_udp_hdr) + __pkt_gen_payload_len);
