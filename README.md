@@ -4,6 +4,10 @@ This is the benchmark tool of the [iip TCP/IP stack](https://github.com/yasukata
 
 **WARNING: Several commands described in this README need the root permission (sudo). So, please conduct the following procedure only when you understand what you are doing. The authors will not bear any responsibility if the implementations, provided by the authors, cause any problems.**
 
+## jumpstart
+
+A start kit for Docker environments is found at [https://github.com/yasukata/jumpstart-on-docker#bench-iip-on-dpdk](https://github.com/yasukata/jumpstart-on-docker#bench-iip-on-dpdk). This would be useful for quickly checking how the program in this repository works.
+
 ## build
 
 Please first download the source code of this repository.
