@@ -708,7 +708,7 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 			break;
 		}
 	}
-	iip_tcp_rxbuf_consumed(mem, handle, 1, opaque);
+	iip_tcp_rxbuf_consumed(mem, handle, PB_TCP_PAYLOAD_LEN(m) - head_off - tail_off, opaque);
 }
 
 static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
