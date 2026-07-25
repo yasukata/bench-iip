@@ -578,44 +578,51 @@ static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void 
 {
 	void **opaque_array = (void **) opaque;
 	struct app_data *ad = (struct app_data *) opaque_array[1];
-	IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
-			PB_ARP_IP_SENDER(m)[0],
-			PB_ARP_IP_SENDER(m)[1],
-			PB_ARP_IP_SENDER(m)[2],
-			PB_ARP_IP_SENDER(m)[3],
-			PB_ARP_HW_SENDER(m)[0],
-			PB_ARP_HW_SENDER(m)[1],
-			PB_ARP_HW_SENDER(m)[2],
-			PB_ARP_HW_SENDER(m)[3],
-			PB_ARP_HW_SENDER(m)[4],
-			PB_ARP_HW_SENDER(m)[5]
-	      );
-	if (PB_ARP_IP_SENDER(m)[0] == (uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff) &&
-			PB_ARP_IP_SENDER(m)[1] == (uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff) &&
-			PB_ARP_IP_SENDER(m)[2] == (uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff) &&
-			PB_ARP_IP_SENDER(m)[3] == (uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff))
-		memcpy(ad->remote_mac, PB_ARP_HW_SENDER(m), 6);
+	{ /* ethernet */
+		uint8_t hw_sender[6];
+		uint8_t ip4_sender[4];
+		memcpy(hw_sender, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + sizeof(struct iip_arp_hdr), 6);
+		memcpy(ip4_sender, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + sizeof(struct iip_arp_hdr) + 6, 4);
+		IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
+				ip4_sender[0], ip4_sender[1], ip4_sender[2], ip4_sender[3],
+				hw_sender[0], hw_sender[1], hw_sender[2], hw_sender[3], hw_sender[4], hw_sender[5]);
+		if (ip4_sender[0] == (uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff) &&
+				ip4_sender[1] == (uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff) &&
+				ip4_sender[2] == (uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff) &&
+				ip4_sender[3] == (uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff))
+			memcpy(ad->remote_mac, hw_sender, 6);
+	}
 }
 
-static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m __attribute__((unused)), void *opaque __attribute__((unused)))
+static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
 {
+	struct iip_ip4_hdr ip4h;
+	__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
 	IIP_OPS_DEBUG_PRINTF("received icmp reply from %u.%u.%u.%u\n",
-			(PB_IP4(m)->dst_be >>  0) & 0xff,
-			(PB_IP4(m)->dst_be >>  8) & 0xff,
-			(PB_IP4(m)->dst_be >> 16) & 0xff,
-			(PB_IP4(m)->dst_be >> 24) & 0xff);
+			(ip4h.dst_be >>  0) & 0xff,
+			(ip4h.dst_be >>  8) & 0xff,
+			(ip4h.dst_be >> 16) & 0xff,
+			(ip4h.dst_be >> 24) & 0xff);
 }
 
 static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
 	struct app_data *ad = (struct app_data *) opaque_array[1];
-	if (PB_TCP(m)->dst_be == htons(50000)) /* to remote shutdown */
-		return 1;
-	if (PB_TCP(m)->dst_be == ad->l4_port_be)
-		return 1;
-	else
-		return 0;
+	{
+		struct iip_ip4_hdr ip4h;
+		__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
+		{
+			struct iip_tcp_hdr tcph;
+			__iip_memcpy(&tcph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(tcph));
+			if (tcph.dst_be == htons(50000)) /* to remote shutdown */
+				return 1;
+			if (tcph.dst_be == ad->l4_port_be)
+				return 1;
+			else
+				return 0;
+		}
+	}
 }
 
 static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
@@ -654,17 +661,25 @@ static void *iip_ops_tcp_connected(void *mem, void *handle, void *m __attribute_
 			memset(to, 0, sizeof(struct tcp_opaque));
 			to->handle = handle;
 			td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
-			if (PB_TCP(m)->src_be == htons(50000 /* remote shutdown */))
-				iip_tcp_close(mem, handle, opaque);
-			else {
-				uint16_t i;
-				for (i = 0; i < ad->io_depth; i++) {
-					__tcp_send_content(mem, handle, to, to->cur, 1, opaque);
-					if (++to->cur == td->payload.cnt)
-						to->cur = 0;
+			{
+				struct iip_ip4_hdr ip4h;
+				__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
+				{
+					struct iip_tcp_hdr tcph;
+					__iip_memcpy(&tcph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(tcph));
+					if (tcph.src_be == htons(50000 /* remote shutdown */))
+						iip_tcp_close(mem, handle, opaque);
+					else {
+						uint16_t i;
+						for (i = 0; i < ad->io_depth; i++) {
+							__tcp_send_content(mem, handle, to, to->cur, 1, opaque);
+							if (++to->cur == td->payload.cnt)
+								to->cur = 0;
+						}
+					}
 				}
+				return (void *) to;
 			}
-			return (void *) to;
 		}
 	}
 }
@@ -678,37 +693,48 @@ static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
 		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		{
-			uint8_t idx = td->monitor.idx;
-			__asm__ volatile ("" ::: "memory");
-			td->monitor.counter[idx].rx_bytes += PB_TCP_PAYLOAD_LEN(m) - head_off - tail_off;
-			td->monitor.counter[idx].rx_pkt++;
-		}
-		switch (ad->app_mode) {
-		case 1: /* ping-pong */
-			if (ad->remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
-				void **opaque_array = (void **) opaque;
+			struct iip_ip4_hdr ip4h;
+			__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
+			{
+				struct iip_tcp_hdr tcph;
+				__iip_memcpy(&tcph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(tcph));
 				{
-					struct thread_data *td = (struct thread_data *) opaque_array[2];
+					uint16_t tcp_payload_len = __iip_ntohs(ip4h.len_be) - ((ip4h.vl & 0x0f) << 2) - (((uint16_t) __iip_ntohs(tcph.flags) >> 12) << 2) - head_off - tail_off;
 					{
-						uint64_t now = BENCH_IIP_NOW(opaque);
-						td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
-						((struct tcp_opaque *) tcp_opaque)->monitor.ts = now;
+						uint8_t idx = td->monitor.idx;
+						__asm__ volatile ("" ::: "memory");
+						td->monitor.counter[idx].rx_bytes += tcp_payload_len;
+						td->monitor.counter[idx].rx_pkt++;
 					}
+					iip_tcp_rxbuf_consumed(mem, handle, tcp_payload_len, opaque);
 				}
 			}
-			if (ad->pacing_pps)
-				((struct tcp_opaque *) tcp_opaque)->sent--;
-			else
-				__tcp_send_content(mem, handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
-			break;
-		case 2: /* burst */
-			break;
-		default:
-			assert(0);
-			break;
+			switch (ad->app_mode) {
+			case 1: /* ping-pong */
+				if (ad->remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
+					void **opaque_array = (void **) opaque;
+					{
+						struct thread_data *td = (struct thread_data *) opaque_array[2];
+						{
+							uint64_t now = BENCH_IIP_NOW(opaque);
+							td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
+							((struct tcp_opaque *) tcp_opaque)->monitor.ts = now;
+						}
+					}
+				}
+				if (ad->pacing_pps)
+					((struct tcp_opaque *) tcp_opaque)->sent--;
+				else
+					__tcp_send_content(mem, handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
+				break;
+			case 2: /* burst */
+				break;
+			default:
+				assert(0);
+				break;
+			}
 		}
 	}
-	iip_tcp_rxbuf_consumed(mem, handle, PB_TCP_PAYLOAD_LEN(m) - head_off - tail_off, opaque);
 }
 
 static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
@@ -791,29 +817,29 @@ static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
 
 static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
 {
-
 	void **opaque_array = (void **) opaque;
 	{
 		struct app_data *ad = (struct app_data *) opaque_array[1];
 		struct thread_data *td = (struct thread_data *) opaque_array[2];
 		if (ad->app_mode == 1) { /* ping-pong */
-			void *_m;
-			assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
-			assert(!iip_udp_send(mem,
-						iip_ops_l2_hdr_dst_ptr(m, opaque),
-						PB_IP4(m)->dst_be,
-						PB_UDP(m)->dst_be,
-						iip_ops_l2_hdr_src_ptr(m, opaque),
-						PB_IP4(m)->src_be,
-						PB_UDP(m)->src_be,
-						_m, opaque));
-			td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
-			td->monitor.counter[td->monitor.idx].tx_pkt++;
-			if (!ad->start_time)
-				ad->start_time = BENCH_IIP_NOW(opaque);
+			struct iip_ip4_hdr ip4h;
+			__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
+			{
+				struct iip_udp_hdr udph;
+				__iip_memcpy(&udph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(udph));
+				{
+					void *_m;
+					assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
+					assert(!iip_udp_send(mem, iip_ops_l2_hdr_dst_ptr(m, opaque), ip4h.dst_be, udph.dst_be, iip_ops_l2_hdr_src_ptr(m, opaque), ip4h.src_be, udph.src_be, _m, opaque));
+					td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
+					td->monitor.counter[td->monitor.idx].tx_pkt++;
+					if (!ad->start_time)
+						ad->start_time = BENCH_IIP_NOW(opaque);
+				}
+			}
+			td->monitor.counter[td->monitor.idx].rx_bytes += __iip_ntohs(ip4h.len_be) - ((ip4h.vl & 0x0f) << 2) - sizeof(struct iip_udp_hdr);
+			td->monitor.counter[td->monitor.idx].rx_pkt++;
 		}
-		td->monitor.counter[td->monitor.idx].rx_bytes += PB_UDP_PAYLOAD_LEN(m);
-		td->monitor.counter[td->monitor.idx].rx_pkt++;
 	}
 }
 
