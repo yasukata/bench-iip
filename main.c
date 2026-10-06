@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
@@ -53,12 +54,6 @@ static void mem_free(void *ptr, size_t len)
 }
 #endif
 
-#define __iip_memcpy	memcpy
-#define __iip_memset	memset
-#define __iip_memcmp	memcmp
-#define __iip_memmove	memmove
-#define __iip_assert	assert
-
 static uint8_t verbose_level = 0;
 
 #ifndef IIP_OPS_DEBUG_PRINTF
@@ -75,11 +70,25 @@ static void __debug_printf(const char *format, ...)
 #define IIP_OPS_DEBUG_PRINTF __debug_printf
 #endif
 
+#define IIP_TCP_CONN_STRUCT_EXTRA struct tcp_opaque *opaque
+typedef struct tcp_opaque * tcp_opaque_ptr_t;
+#define IIP_TCP_OPAQUE_P tcp_opaque_ptr_t
+
 #ifndef IIP_MAIN_C
 #define IIP_MAIN_C "iip/main.c"
 #endif
 
+#define SKIP_IOSUB_IMPLEMENTATION
+#define M2S(s) _M2S(s)
+#define _M2S(s) #s
+#include M2S(IOSUB_MAIN_C)
+#undef _M2S
+#undef M2S
+#undef SKIP_IOSUB_IMPLEMENTATION
+
+#define SKIP_IIP_IMPLEMENTATION
 #include IIP_MAIN_C
+#undef SKIP_IIP_IMPLEMENTATION
 
 #if !defined(APP_IIP_OPS_UTIL_NOW_NS_NONE)
 static void iip_ops_util_now_ns(uint32_t t[3], void *opaque)
@@ -94,8 +103,6 @@ static void iip_ops_util_now_ns(uint32_t t[3], void *opaque)
 	}
 }
 #endif
-
-static uint16_t helper_ip4_get_connection_affinity(uint16_t, uint32_t, uint16_t, uint32_t, uint16_t, void *);
 
 static uint64_t BENCH_IIP_NOW(void *opaque)
 {
@@ -126,8 +133,8 @@ static uint64_t BENCH_IIP_NOW(void *opaque)
 struct thread_data {
 	uint16_t core_id;
 	struct {
-		uint16_t cnt;
-		void *pkt[MAX_PAYLOAD_PKT_CNT];
+		IIP_PKT_CNT_T cnt;
+		IIP_PKT_P pkt[MAX_PAYLOAD_PKT_CNT];
 	} payload;
 	uint8_t app_state;
 	uint8_t close_state;
@@ -157,7 +164,7 @@ struct thread_data {
 };
 
 struct tcp_opaque {
-	void *handle;
+	uintptr_t handle;
 	uint16_t cur;
 	uint16_t sent;
 	uint64_t prev_sent; /* for pacing */
@@ -198,47 +205,18 @@ struct app_data {
 	uint64_t *latency_val;
 };
 
-static uint8_t __app_should_stop(void *opaque)
+static uint8_t __app_should_stop(IIP_OPAQUE_P opaque)
 {
 	void **opaque_array = (void **) opaque;
 	struct thread_data *td = (struct thread_data *) opaque_array[2];
 	return td->should_stop;
 }
 
-static void __tcp_send_content(void *mem, void *handle, struct tcp_opaque *to, uint16_t cur, uint16_t cnt, void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	{
-		struct app_data *ad = (struct app_data *) opaque_array[1];
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		{
-			uint32_t l = 0;
-			{
-				uint16_t i;
-				for (i = 0; i < cnt; i++) {
-					void *m;
-					assert((m = iip_ops_pkt_clone(td->payload.pkt[cur], opaque)) != NULL);
-					l += iip_ops_pkt_get_len(m, opaque);
-					if (++cur == td->payload.cnt)
-						cur = 0;
-					assert(!iip_tcp_send(mem, handle, m, (i == cnt - 1 ? 0x08U /* PSH */ : 0), opaque));
-				}
-			}
-			if (ad->pacing_pps) {
-				to->prev_sent = BENCH_IIP_NOW(opaque);
-				to->sent += cnt;
-			}
-			if (ad->app_mode == 1 /* ping-pong */)
-				to->monitor.ts = BENCH_IIP_NOW(opaque);
-			td->monitor.counter[td->monitor.idx].tx_bytes += l;
-			td->monitor.counter[td->monitor.idx].tx_pkt += cnt;
-		}
-	}
-}
-
 #ifndef MAX_PORT_CNT
 #define MAX_PORT_CNT (1024)
 #endif
+
+static void app_tcp_send_content(void *mem, IIP_TCP_CONN_P conn_id, struct tcp_opaque *to, uint16_t cur, IIP_PKT_CNT_T cnt, void *opaque);
 
 static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next_us, void *opaque)
 {
@@ -294,7 +272,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 								(ad->remote_ip4_addr_be >>  8) & 0xff,
 								(ad->remote_ip4_addr_be >> 16) & 0xff,
 								(ad->remote_ip4_addr_be >> 24) & 0xff);
-						iip_arp_request(mem, mac, ip4_be, ad->remote_ip4_addr_be, opaque);
+						iip_arp_ethernet_request(mem, mac, ip4_be, ad->remote_ip4_addr_be, opaque);
 						td->prev_arp = now;
 					}
 				}
@@ -319,32 +297,11 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 												(uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff),
 												(uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff),
 												ntohs(ad->l4_port_be), j);
-										assert(!iip_tcp_connect(mem,
+										assert(!iip_tcp_ipv4_ethernet_connect(mem,
 													mac, ip4_be, htons(j),
 													ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
+													NULL, 0, NULL, 0, 0,
 													opaque));
-									}
-									break;
-								case 17:
-									if (ad->app_mode == 1) { /* ping-pong */
-										IIP_OPS_DEBUG_PRINTF("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
-												td->core_id,
-												(uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff),
-												(uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff),
-												(uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff),
-												(uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff),
-												ntohs(ad->l4_port_be), j);
-										{
-											uint16_t k;
-											for (k = 0; k < ad->io_depth; k++) {
-												void *m;
-												assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
-												assert(!iip_udp_send(mem,
-															mac, ip4_be, htons(j),
-															ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
-															m, opaque));
-											}
-										}
 									}
 									break;
 								default:
@@ -367,30 +324,11 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 					for (i = 0; i < td->tcp.conn_list_cnt; i++) {
 						if (td->tcp.conn_list[i]->sent != td->payload.cnt) {
 							if ((1000000000UL / ad->pacing_pps) < BENCH_IIP_NOW(opaque) - td->tcp.conn_list[i]->prev_sent) {
-								__tcp_send_content(mem, td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], td->tcp.conn_list[i]->cur, td->payload.cnt - td->tcp.conn_list[i]->sent, opaque);
+								app_tcp_send_content(mem, td->tcp.conn_list[i]->handle, td->tcp.conn_list[i], td->tcp.conn_list[i]->cur, td->payload.cnt - td->tcp.conn_list[i]->sent, opaque);
 								if (++td->tcp.conn_list[i]->cur == td->payload.cnt)
 									td->tcp.conn_list[i]->cur = 0;
 							}
 						}
-					}
-				}
-				break;
-			case 17:
-				if (ad->app_mode == 2 && ad->remote_ip4_addr_be && !__app_close_posted) { /* burst */
-					uint16_t i;
-					for (i = 0; i < ad->io_depth; i++) {
-						void *m;
-						assert((m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
-						assert(!iip_udp_send(mem,
-									mac, ip4_be, htons(td->udp.var[0]),
-									ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
-									m, opaque));
-						if (++td->udp.var[0] == 0xffff)
-							td->udp.var[0] = 0;
-						td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
-						td->monitor.counter[td->monitor.idx].tx_pkt++;
-						if (!ad->start_time)
-							ad->start_time = BENCH_IIP_NOW(opaque);
 					}
 				}
 				break;
@@ -478,9 +416,10 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 										ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
 										opaque)) {
 								__APP_PRINTF("send stop request to the remote host (local port %u)\n", i); fflush(stdout);
-								assert(!iip_tcp_connect(mem,
+								assert(!iip_tcp_ipv4_ethernet_connect(mem,
 											mac, ip4_be, htons(i),
 											ad->remote_mac, ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
+											NULL, 0, NULL, 0, 0,
 											opaque));
 								break;
 							}
@@ -543,6 +482,10 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 	}
 }
 
+static int ii_call_pkt_alloc(IIP_PKT_P *pkt, IIP_OPAQUE_P opaque);
+static uint8_t *ii_call_pkt_get_data(IIP_PKT_P pkt, IIP_OPAQUE_P opaque);
+static int ii_call_pkt_set_len(IIP_PKT_P pkt, IIP_PKT_LEN_T len, IIP_OPAQUE_P opaque);
+
 static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 {
 	void **opaque_array = (void **) opaque;
@@ -554,12 +497,12 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 	if (ad->payload_len) {
 		uint32_t l = 0;
 		while (l != ad->payload_len) {
-			assert((td->payload.pkt[td->payload.cnt] = iip_ops_pkt_alloc(opaque)) != NULL);
+			assert(!ii_call_pkt_alloc(&td->payload.pkt[td->payload.cnt], opaque));
 			{
 				uint16_t _l = (ad->payload_len - l < MAX_PAYLOAD_LEN ? ad->payload_len - l : MAX_PAYLOAD_LEN);
 				if (ad->app_msg)
-					memcpy(iip_ops_pkt_get_data(td->payload.pkt[td->payload.cnt], opaque), &ad->app_msg[l], _l);
-				iip_ops_pkt_set_len(td->payload.pkt[td->payload.cnt], _l, opaque);
+					memcpy(ii_call_pkt_get_data(td->payload.pkt[td->payload.cnt], opaque), &ad->app_msg[l], _l);
+				ii_call_pkt_set_len(td->payload.pkt[td->payload.cnt], _l, opaque);
 				l += _l;
 			}
 			td->payload.cnt++;
@@ -572,275 +515,7 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 	{ /* unused */
 		(void) workspace;
 	}
-}
 
-static void iip_ops_arp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	struct app_data *ad = (struct app_data *) opaque_array[1];
-	{ /* ethernet */
-		uint8_t hw_sender[6];
-		uint8_t ip4_sender[4];
-		memcpy(hw_sender, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + sizeof(struct iip_arp_hdr), 6);
-		memcpy(ip4_sender, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + sizeof(struct iip_arp_hdr) + 6, 4);
-		IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
-				ip4_sender[0], ip4_sender[1], ip4_sender[2], ip4_sender[3],
-				hw_sender[0], hw_sender[1], hw_sender[2], hw_sender[3], hw_sender[4], hw_sender[5]);
-		if (ip4_sender[0] == (uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff) &&
-				ip4_sender[1] == (uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff) &&
-				ip4_sender[2] == (uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff) &&
-				ip4_sender[3] == (uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff))
-			memcpy(ad->remote_mac, hw_sender, 6);
-	}
-}
-
-static void iip_ops_icmp_reply(void *_mem __attribute__((unused)), void *m, void *opaque)
-{
-	struct iip_ip4_hdr ip4h;
-	__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
-	IIP_OPS_DEBUG_PRINTF("received icmp reply from %u.%u.%u.%u\n",
-			(ip4h.dst_be >>  0) & 0xff,
-			(ip4h.dst_be >>  8) & 0xff,
-			(ip4h.dst_be >> 16) & 0xff,
-			(ip4h.dst_be >> 24) & 0xff);
-}
-
-static uint8_t iip_ops_tcp_accept(void *mem __attribute__((unused)), void *m, void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	struct app_data *ad = (struct app_data *) opaque_array[1];
-	{
-		struct iip_ip4_hdr ip4h;
-		__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
-		{
-			struct iip_tcp_hdr tcph;
-			__iip_memcpy(&tcph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(tcph));
-			if (tcph.dst_be == htons(50000)) /* to remote shutdown */
-				return 1;
-			if (tcph.dst_be == ad->l4_port_be)
-				return 1;
-			else
-				return 0;
-		}
-	}
-}
-
-static void *iip_ops_tcp_accepted(void *mem __attribute__((unused)), void *handle, void *m __attribute__((unused)), void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	struct app_data *ad = (struct app_data *) opaque_array[1];
-	struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque));
-	assert(to);
-	memset(to, 0, sizeof(struct tcp_opaque));
-	to->handle = handle;
-	{
-		void **opaque_array = (void **) opaque;
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++ad->active_conn);
-	}
-	{
-		void **opaque_array = (void **) opaque;
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
-	}
-	return (void *) to;
-}
-
-static void *iip_ops_tcp_connected(void *mem, void *handle, void *m __attribute__((unused)), void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	{
-		struct app_data *ad = (struct app_data *) opaque_array[1];
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++ad->active_conn);
-		if (!ad->start_time)
-			ad->start_time = BENCH_IIP_NOW(opaque);
-		{
-			struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
-			assert(to);
-			memset(to, 0, sizeof(struct tcp_opaque));
-			to->handle = handle;
-			td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
-			{
-				struct iip_ip4_hdr ip4h;
-				__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
-				{
-					struct iip_tcp_hdr tcph;
-					__iip_memcpy(&tcph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(tcph));
-					if (tcph.src_be == htons(50000 /* remote shutdown */))
-						iip_tcp_close(mem, handle, opaque);
-					else {
-						uint16_t i;
-						for (i = 0; i < ad->io_depth; i++) {
-							__tcp_send_content(mem, handle, to, to->cur, 1, opaque);
-							if (++to->cur == td->payload.cnt)
-								to->cur = 0;
-						}
-					}
-				}
-				return (void *) to;
-			}
-		}
-	}
-}
-
-static void iip_ops_tcp_payload(void *mem, void *handle, void *m,
-				void *tcp_opaque, uint16_t head_off, uint16_t tail_off,
-				void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	{
-		struct app_data *ad = (struct app_data *) opaque_array[1];
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		{
-			struct iip_ip4_hdr ip4h;
-			__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
-			{
-				struct iip_tcp_hdr tcph;
-				__iip_memcpy(&tcph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(tcph));
-				{
-					uint16_t tcp_payload_len = __iip_ntohs(ip4h.len_be) - ((ip4h.vl & 0x0f) << 2) - (((uint16_t) __iip_ntohs(tcph.flags) >> 12) << 2) - head_off - tail_off;
-					{
-						uint8_t idx = td->monitor.idx;
-						__asm__ volatile ("" ::: "memory");
-						td->monitor.counter[idx].rx_bytes += tcp_payload_len;
-						td->monitor.counter[idx].rx_pkt++;
-					}
-					iip_tcp_rxbuf_consumed(mem, handle, tcp_payload_len, opaque);
-				}
-			}
-			switch (ad->app_mode) {
-			case 1: /* ping-pong */
-				if (ad->remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
-					void **opaque_array = (void **) opaque;
-					{
-						struct thread_data *td = (struct thread_data *) opaque_array[2];
-						{
-							uint64_t now = BENCH_IIP_NOW(opaque);
-							td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
-							((struct tcp_opaque *) tcp_opaque)->monitor.ts = now;
-						}
-					}
-				}
-				if (ad->pacing_pps)
-					((struct tcp_opaque *) tcp_opaque)->sent--;
-				else
-					__tcp_send_content(mem, handle, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
-				break;
-			case 2: /* burst */
-				break;
-			default:
-				assert(0);
-				break;
-			}
-		}
-	}
-}
-
-static void iip_ops_tcp_acked(void *mem __attribute__((unused)),
-			      void *handle,
-			      void *m __attribute__((unused)),
-			      void *tcp_opaque,
-			      void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	struct app_data *ad = (struct app_data *) opaque_array[1];
-	if (ad->remote_ip4_addr_be) { /* client */
-		switch (ad->app_mode) {
-		case 1: /* ping-pong */
-			break;
-		case 2: /* burst */
-			if (ad->pacing_pps)
-				((struct tcp_opaque *) tcp_opaque)->sent--;
-			else {
-				__tcp_send_content(mem, handle, (struct tcp_opaque *) tcp_opaque, ((struct tcp_opaque *) tcp_opaque)->cur, 1, opaque);
-				{
-					void **opaque_array = (void **) opaque;
-					struct thread_data *td = (struct thread_data *) opaque_array[2];
-					{
-						if (++((struct tcp_opaque *) tcp_opaque)->cur == td->payload.cnt)
-							((struct tcp_opaque *) tcp_opaque)->cur = 0;
-					}
-				}
-			}
-			break;
-		default:
-			assert(0);
-			break;
-		}
-	}
-}
-
-static void iip_ops_tcp_closed(void *handle __attribute__((unused)),
-			       uint8_t local_mac[], uint32_t local_ip4_be, uint16_t local_port_be,
-			       uint8_t peer_mac[], uint32_t peer_ip4_be, uint16_t peer_port_be,
-			       void *tcp_opaque, void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	struct app_data *ad = (struct app_data *) opaque_array[1];
-	if (ntohs(peer_port_be) == 50000 /* remote shutdown */) {
-		__APP_PRINTF("remote stop request is handled\n");
-		__app_remote_stop_handled = 1;
-	} else if (ntohs(local_port_be) == 50000 /* remote shutdown */) {
-		time_t t = time(NULL);
-		struct tm lt;
-		localtime_r(&t, &lt);
-		__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
-				lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
-				lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
-		__app_close_posted = 1;
-		signal(SIGINT, SIG_DFL);
-	}
-	{
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		{
-			uint16_t i;
-			for (i = 0; i < td->tcp.conn_list_cnt; i++) {
-				if (tcp_opaque == td->tcp.conn_list[i]) {
-					td->tcp.conn_list[i] = td->tcp.conn_list[--td->tcp.conn_list_cnt];
-					mem_free(tcp_opaque, sizeof(struct tcp_opaque));
-					break;
-				}
-			}
-		}
-	}
-	IIP_OPS_DEBUG_PRINTF("tcp connection closed (%lu)\n", --ad->active_conn);
-	{ /* unused */
-		(void) local_mac;
-		(void) local_ip4_be;
-		(void) local_port_be;
-		(void) peer_mac;
-		(void) peer_ip4_be;
-		(void) peer_port_be;
-	}
-}
-
-static void iip_ops_udp_payload(void *mem, void *m, void *opaque)
-{
-	void **opaque_array = (void **) opaque;
-	{
-		struct app_data *ad = (struct app_data *) opaque_array[1];
-		struct thread_data *td = (struct thread_data *) opaque_array[2];
-		if (ad->app_mode == 1) { /* ping-pong */
-			struct iip_ip4_hdr ip4h;
-			__iip_memcpy(&ip4h, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque), sizeof(ip4h));
-			{
-				struct iip_udp_hdr udph;
-				__iip_memcpy(&udph, iip_ops_pkt_get_data(m, opaque) + iip_ops_l2_hdr_len(m, opaque) + ((ip4h.vl & 0x0f) << 2), sizeof(udph));
-				{
-					void *_m;
-					assert((_m = iip_ops_pkt_clone(td->payload.pkt[0], opaque)) != NULL);
-					assert(!iip_udp_send(mem, iip_ops_l2_hdr_dst_ptr(m, opaque), ip4h.dst_be, udph.dst_be, iip_ops_l2_hdr_src_ptr(m, opaque), ip4h.src_be, udph.src_be, _m, opaque));
-					td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
-					td->monitor.counter[td->monitor.idx].tx_pkt++;
-					if (!ad->start_time)
-						ad->start_time = BENCH_IIP_NOW(opaque);
-				}
-			}
-			td->monitor.counter[td->monitor.idx].rx_bytes += __iip_ntohs(ip4h.len_be) - ((ip4h.vl & 0x0f) << 2) - sizeof(struct iip_udp_hdr);
-			td->monitor.counter[td->monitor.idx].rx_pkt++;
-		}
-	}
 }
 
 static void sig_h(int sig __attribute__((unused)))
@@ -1042,11 +717,227 @@ static void *__app_init(int argc, char *const *argv)
 	return (void *) ad;
 }
 
+#define SKIP_IOSUB_DEFINITION
 #define M2S(s) _M2S(s)
 #define _M2S(s) #s
 #include M2S(IOSUB_MAIN_C)
 #undef _M2S
 #undef M2S
+#undef SKIP_IOSUB_DEFINITION
+
+static void iip_ops_arp_ethernet_reply(IIP_PKT_P m, IIP_OPAQUE_P *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
+	{ /* ethernet */
+		uint8_t hw_sender[6];
+		uint8_t ip4_sender[4];
+		memcpy(hw_sender, ii_call_pkt_get_data(m, opaque) + II_ETH_HDR_LEN + II_ARP_HDR_LEN, 6);
+		memcpy(ip4_sender, ii_call_pkt_get_data(m, opaque) + II_ETH_HDR_LEN + II_ARP_HDR_LEN + 6, 4);
+		IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
+				ip4_sender[0], ip4_sender[1], ip4_sender[2], ip4_sender[3],
+				hw_sender[0], hw_sender[1], hw_sender[2], hw_sender[3], hw_sender[4], hw_sender[5]);
+		if (ip4_sender[0] == (uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff) &&
+				ip4_sender[1] == (uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff) &&
+				ip4_sender[2] == (uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff) &&
+				ip4_sender[3] == (uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff))
+			memcpy(ad->remote_mac, hw_sender, 6);
+	}
+}
+#define IIP_OPS_ARP_ETHERNET_REPLY() do { iip_ops_arp_ethernet_reply(rx_pkt, opaque); iip_ret_int = 0; } while (0)
+
+#define IIP_OPS_TCP_ACCEPT() do { iip_ret_bool = true; } while (0)
+
+static void app_tcp_send_content(void *mem, IIP_TCP_CONN_P conn_id, struct tcp_opaque *to, uint16_t cur, IIP_PKT_CNT_T cnt, void *opaque)
+{
+	void **opaque_array = (void **) opaque;
+	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		{
+			uint32_t l = 0;
+			{
+				uint16_t i;
+				for (i = 0; i < cnt; i++) {
+					IIP_PKT_P m;
+					{
+						int iip_ret_int;
+						IIP_PKT_P pkt = td->payload.pkt[cur];
+						IIP_PKT_P *cloned_pkt = &m;
+						IIP_OPS_PKT_CLONE();
+						(void) iip_ret_int;
+					}
+					{
+						void *pkt = m;
+						{
+							IIP_PKT_LEN_T iip_ret_len;
+							IIP_OPS_PKT_GET_LEN();
+							l += iip_ret_len;
+						}
+					}
+					if (++cur == td->payload.cnt)
+						cur = 0;
+					{
+						IIP_PKT_P pkts[1];
+						pkts[0] = m;
+						assert(!iip_tcp_send(mem, conn_id, pkts, 1, opaque));
+					}
+				}
+			}
+			if (ad->pacing_pps) {
+				to->prev_sent = BENCH_IIP_NOW(opaque);
+				to->sent += cnt;
+			}
+			if (ad->app_mode == 1 /* ping-pong */)
+				to->monitor.ts = BENCH_IIP_NOW(opaque);
+			td->monitor.counter[td->monitor.idx].tx_bytes += l;
+			td->monitor.counter[td->monitor.idx].tx_pkt += cnt;
+		}
+	}
+}
+
+static IIP_TCP_OPAQUE_P iip_ops_tcp_connected(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P opaque)
+{
+	void **opaque_array = (void **) opaque;
+	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		IIP_OPS_DEBUG_PRINTF("[%u] connected (%lu)\n", td->core_id, ++ad->active_conn);
+		if (!ad->start_time)
+			ad->start_time = BENCH_IIP_NOW(opaque);
+		{
+			struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque)); /* TODO: finer-grained allocation */
+			assert(to);
+			memset(to, 0, sizeof(struct tcp_opaque));
+			to->handle = conn_id;
+			td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
+			{
+				if (II_TCP_CONN(conn_id).src_port == 50000 /* remote shutdown */)
+					iip_tcp_close(w, conn_id, opaque);
+				else {
+					uint16_t i;
+					for (i = 0; i < ad->io_depth; i++) {
+						app_tcp_send_content(w, conn_id, to, to->cur, 1, opaque);
+						if (++to->cur == td->payload.cnt)
+							to->cur = 0;
+					}
+				}
+				return (void *) to;
+			}
+		}
+	}
+}
+#define IIP_OPS_TCP_CONNECTED() do { II_TCP_CONN(conn_id).opaque = iip_ops_tcp_connected(w, conn_id, opaque); iip_ret_int = 0; } while (0)
+
+static IIP_TCP_OPAQUE_P iip_ops_tcp_accepted(IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P opaque)
+{
+	void **opaque_array = (void **) opaque;
+	struct app_data *ad = (struct app_data *) opaque_array[1];
+	struct tcp_opaque *to = (struct tcp_opaque *) mem_alloc_local(sizeof(struct tcp_opaque));
+	assert(to);
+	memset(to, 0, sizeof(struct tcp_opaque));
+	to->handle = conn_id;
+	{
+		void **opaque_array = (void **) opaque;
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		IIP_OPS_DEBUG_PRINTF("[%u] accept new connection (%lu)\n", td->core_id, ++ad->active_conn);
+	}
+	{
+		void **opaque_array = (void **) opaque;
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		td->tcp.conn_list[td->tcp.conn_list_cnt++] = to;
+	}
+	return (void *) to;
+
+}
+#define IIP_OPS_TCP_ACCEPTED() do { II_TCP_CONN(conn_id).opaque = iip_ops_tcp_accepted(conn_id, opaque); iip_ret_int = 0; } while (0)
+
+static int iip_ops_tcp_payload(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, II_PB_P pb_id, IIP_OPAQUE_P opaque)
+{
+	void **opaque_array = (void **) opaque;
+	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		{
+			struct tcp_opaque *tcp_opaque = II_TCP_CONN(conn_id).opaque;
+			{
+				uint16_t tcp_payload_len = II_PB(pb_id).tcp.payload_len;
+				{
+					uint8_t idx = td->monitor.idx;
+					__asm__ volatile ("" ::: "memory");
+					td->monitor.counter[idx].rx_bytes += tcp_payload_len;
+					td->monitor.counter[idx].rx_pkt++;
+				}
+				iip_tcp_rxbuf_consumed(w, conn_id, tcp_payload_len, opaque);
+			}
+			switch (ad->app_mode) {
+			case 1: /* ping-pong */
+				if (ad->remote_ip4_addr_be && ((struct tcp_opaque *) tcp_opaque)->monitor.ts) {
+					void **opaque_array = (void **) opaque;
+					{
+						struct thread_data *td = (struct thread_data *) opaque_array[2];
+						{
+							uint64_t now = BENCH_IIP_NOW(opaque);
+							td->monitor.latency.val[td->monitor.latency.cnt++ % NUM_MONITOR_LATENCY_RECORD] = now - ((struct tcp_opaque *) tcp_opaque)->monitor.ts;
+							((struct tcp_opaque *) tcp_opaque)->monitor.ts = now;
+						}
+					}
+				}
+				if (ad->pacing_pps)
+					((struct tcp_opaque *) tcp_opaque)->sent--;
+				else
+					app_tcp_send_content(w, conn_id, (struct tcp_opaque *) tcp_opaque, 0, td->payload.cnt, opaque);
+				break;
+			case 2: /* burst */
+				break;
+			default:
+				assert(0);
+				break;
+			}
+		}
+	}
+	return 0;
+}
+#define IIP_OPS_TCP_PAYLOAD() do { iip_ret_int = iip_ops_tcp_payload(w, conn_id, pb_id, opaque); } while (0)
+
+static int iip_ops_tcp_closed(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P opaque)
+{
+	if (II_TCP_CONN(conn_id).dst_port == 50000 /* remote shutdown */) {
+		__APP_PRINTF("remote stop request is handled\n");
+		__app_remote_stop_handled = 1;
+	} else if (II_TCP_CONN(conn_id).src_port == 50000 /* remote shutdown */) {
+		time_t t = time(NULL);
+		struct tm lt;
+		localtime_r(&t, &lt);
+		__APP_PRINTF("%04u-%02u-%02u %02u:%02u:%02u : close requested via network\n",
+				lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+				lt.tm_hour, lt.tm_min, lt.tm_sec); fflush(stdout);
+		__app_close_posted = 1;
+		signal(SIGINT, SIG_DFL);
+	}
+	{
+		void **opaque_array = (void **) opaque;
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		{
+			uint16_t i;
+			for (i = 0; i < td->tcp.conn_list_cnt; i++) {
+				if (II_TCP_CONN(conn_id).opaque == td->tcp.conn_list[i]) {
+					td->tcp.conn_list[i] = td->tcp.conn_list[--td->tcp.conn_list_cnt];
+					mem_free(II_TCP_CONN(conn_id).opaque, sizeof(struct tcp_opaque));
+					break;
+				}
+			}
+		}
+	}
+	return 0;
+}
+#define IIP_OPS_TCP_CLOSED() do { iip_ret_int = iip_ops_tcp_closed(w, conn_id, opaque); } while (0)
+
+#define IIP_OPS_TCP_STATE_CLOSE_WAIT() do { iip_ret_int = iip_tcp_close(w, conn_id, opaque); } while (0)
+
+#define SKIP_IIP_DEFINITION
+#include IIP_MAIN_C
+#undef SKIP_IIP_DEFINITION
 
 int main(int argc, char *const *argv)
 {
