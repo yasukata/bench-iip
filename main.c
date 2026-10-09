@@ -70,6 +70,11 @@ static void __debug_printf(const char *format, ...)
 #define IIP_OPS_DEBUG_PRINTF __debug_printf
 #endif
 
+#define IIP_OPS_ERROR_FATAL_SYS() do { printf("[%s:%u]: ERROR SYS\n", __func__, __LINE__); } while (0)
+#define IIP_OPS_ERROR_FATAL_USR() do { printf("[%s:%u]: ERROR USR\n", __func__, __LINE__); } while (0)
+#define IIP_OPS_ERROR_FATAL_SUB() do { printf("[%s:%u]: ERROR SUB\n", __func__, __LINE__); } while (0)
+#define IIP_OPS_ERROR_FATAL_MEM() do { printf("[%s:%u]: ERROR MEM\n", __func__, __LINE__); } while (0)
+
 #define IIP_TCP_CONN_STRUCT_EXTRA struct tcp_opaque *opaque
 typedef struct tcp_opaque * tcp_opaque_ptr_t;
 #define IIP_TCP_OPAQUE_P tcp_opaque_ptr_t
