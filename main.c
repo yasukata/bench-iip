@@ -304,7 +304,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 										assert(!iip_tcp_ipv4_ethernet_connect(mem,
 													mac, ip4_be, htons(j),
 													ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
-													NULL, 0, NULL, 0, 0,
+													NULL, 0, NULL, 0,
 													opaque));
 									}
 									break;
@@ -423,7 +423,7 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 								assert(!iip_tcp_ipv4_ethernet_connect(mem,
 											mac, ip4_be, htons(i),
 											ad->remote_mac, ad->remote_ip4_addr_be, htons(50000 /* remote shutdown */),
-											NULL, 0, NULL, 0, 0,
+											NULL, 0, NULL, 0,
 											opaque));
 								break;
 							}
