@@ -74,6 +74,8 @@ static void __debug_printf(const char *format, ...)
 #define IIP_OPS_ERROR_FATAL_SYS() do { printf("[%s:%u]: ERROR SYS\n", __func__, __LINE__); } while (0)
 #define IIP_OPS_ERROR_FATAL_MEM() do { printf("[%s:%u]: ERROR MEM\n", __func__, __LINE__); } while (0)
 
+#define IE_UNLIKELY(_cond) __builtin_expect(!!(_cond), 0)
+
 #define IIP_TCP_CONN_STRUCT_EXTRA struct tcp_opaque *opaque
 typedef struct tcp_opaque * tcp_opaque_ptr_t;
 #define IIP_TCP_OPAQUE_P tcp_opaque_ptr_t
@@ -487,7 +489,8 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 }
 
 static int ii_call_pkt_alloc(IIP_PKT_P *pkt, IIP_OPAQUE_P opaque);
-static uint8_t *ii_call_pkt_get_data(IIP_PKT_P pkt, IIP_OPAQUE_P opaque);
+static long ii_call_pkt_data_read(IIP_PKT_P pkt, uint8_t *buf, IIP_PKT_LEN_T len, IIP_PKT_LEN_T off, IIP_OPAQUE_P opaque);
+static long ii_call_pkt_data_write(IIP_PKT_P pkt, const uint8_t *buf, IIP_PKT_LEN_T len, IIP_PKT_LEN_T off, IIP_OPAQUE_P opaque);
 static int ii_call_pkt_set_len(IIP_PKT_P pkt, IIP_PKT_LEN_T len, IIP_OPAQUE_P opaque);
 
 static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
@@ -505,7 +508,7 @@ static void *__app_thread_init(void *workspace, uint16_t core_id, void *opaque)
 			{
 				uint16_t _l = (ad->payload_len - l < MAX_PAYLOAD_LEN ? ad->payload_len - l : MAX_PAYLOAD_LEN);
 				if (ad->app_msg)
-					memcpy(ii_call_pkt_get_data(td->payload.pkt[td->payload.cnt], opaque), &ad->app_msg[l], _l);
+					ii_call_pkt_data_write(td->payload.pkt[td->payload.cnt], (const unsigned char *) &ad->app_msg[l], _l, 0, opaque);
 				ii_call_pkt_set_len(td->payload.pkt[td->payload.cnt], _l, opaque);
 				l += _l;
 			}
@@ -736,8 +739,8 @@ static void iip_ops_arp_ethernet_reply(IIP_PKT_P m, IIP_OPAQUE_P *opaque)
 	{ /* ethernet */
 		uint8_t hw_sender[6];
 		uint8_t ip4_sender[4];
-		memcpy(hw_sender, ii_call_pkt_get_data(m, opaque) + II_ETH_HDR_LEN + II_ARP_HDR_LEN, 6);
-		memcpy(ip4_sender, ii_call_pkt_get_data(m, opaque) + II_ETH_HDR_LEN + II_ARP_HDR_LEN + 6, 4);
+		ii_call_pkt_data_read(m, hw_sender, 6, II_ETH_HDR_LEN + II_ARP_HDR_LEN, opaque);
+		ii_call_pkt_data_read(m, ip4_sender, 4, II_ETH_HDR_LEN + II_ARP_HDR_LEN + 6, opaque);
 		IIP_OPS_DEBUG_PRINTF("arp reply: %u.%u.%u.%u at %hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
 				ip4_sender[0], ip4_sender[1], ip4_sender[2], ip4_sender[3],
 				hw_sender[0], hw_sender[1], hw_sender[2], hw_sender[3], hw_sender[4], hw_sender[5]);
