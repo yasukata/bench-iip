@@ -211,6 +211,12 @@ struct app_data {
 	uint64_t *latency_val;
 };
 
+static enum iip_rc iip_udp_ipv4_ethernet_send_copy(IIP_MEM_P w,
+		uint8_t src_mac[II_ETH_ADDR_LEN], uint32_t src_ipv4_be, uint16_t src_port_be,
+		uint8_t dst_mac[II_ETH_ADDR_LEN], uint32_t dst_ipv4_be, uint16_t dst_port_be,
+		uint8_t diffserv,
+		uint8_t *buf, uint16_t buf_len, IIP_OPAQUE_P opaque);
+
 static uint8_t __app_should_stop(IIP_OPAQUE_P opaque)
 {
 	void **opaque_array = (void **) opaque;
@@ -308,6 +314,31 @@ static void __app_loop(void *mem, uint8_t mac[], uint32_t ip4_be, uint32_t *next
 													ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
 													NULL, 0, NULL, 0,
 													opaque));
+									}
+									break;
+								case 17:
+									if (ad->app_mode == 1) { /* ping-pong */
+										IIP_OPS_DEBUG_PRINTF("%u: send first udp packet to %hhu.%hhu.%hhu.%hhu:%u (local %u)\n",
+												td->core_id,
+												(uint8_t)((ad->remote_ip4_addr_be >>  0) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >>  8) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >> 16) & 0xff),
+												(uint8_t)((ad->remote_ip4_addr_be >> 24) & 0xff),
+												ntohs(ad->l4_port_be), j);
+										{
+											uint16_t k;
+											for (k = 0; k < ad->io_depth; k++) {
+												{
+													uint8_t buf[0xffff];
+													if (iip_udp_ipv4_ethernet_send_copy(mem,
+																mac, ip4_be, htons(j),
+																ad->remote_mac, ad->remote_ip4_addr_be, ad->l4_port_be,
+																0, buf, ad->payload_len, opaque) != IIP_ERR_OK) {
+														assert(0);
+													}
+												}
+											}
+										}
 									}
 									break;
 								default:
@@ -941,6 +972,38 @@ static int iip_ops_tcp_closed(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P 
 #define IIP_OPS_TCP_CLOSED() do { iip_ret_int = iip_ops_tcp_closed(w, conn_id, opaque); } while (0)
 
 #define IIP_OPS_TCP_STATE_CLOSE_WAIT() do { iip_ret_int = iip_tcp_close(w, conn_id, opaque); } while (0)
+
+static uint16_t ii_read_uint16(const uint8_t *buf);
+static uint32_t ii_extract_ipv4_src_be(const uint8_t *buf);
+static uint32_t ii_extract_ipv4_dst_be(const uint8_t *buf);
+
+static int iip_ops_udp_payload(IIP_MEM_P w, II_PB_P pb_id, uint8_t udp_hdr[II_UDP_HDR_LEN], uint16_t payload_len, IIP_OPAQUE_P opaque)
+{
+	void **opaque_array = (void **) opaque;
+	{
+		struct app_data *ad = (struct app_data *) opaque_array[1];
+		struct thread_data *td = (struct thread_data *) opaque_array[2];
+		if (ad->app_mode == 1) { /* ping-pong */
+			{
+				uint8_t buf[0xffff];
+				if (iip_udp_ipv4_ethernet_send_copy(w,
+							II_PB(pb_id).part_pkt[0].l2_dst, ii_extract_ipv4_dst_be(II_PB(pb_id).part_pkt[0].l3), ntohs(ii_read_uint16(&udp_hdr[2])),
+							II_PB(pb_id).part_pkt[0].l2_src, ii_extract_ipv4_src_be(II_PB(pb_id).part_pkt[0].l3), ntohs(ii_read_uint16(&udp_hdr[0])),
+							0, buf, ad->payload_len, opaque) != IIP_ERR_OK) {
+					assert(0);
+				}
+			}
+			td->monitor.counter[td->monitor.idx].tx_bytes += ad->payload_len;
+			td->monitor.counter[td->monitor.idx].tx_pkt++;
+			if (!ad->start_time)
+				ad->start_time = BENCH_IIP_NOW(opaque);
+			td->monitor.counter[td->monitor.idx].rx_bytes += payload_len;
+			td->monitor.counter[td->monitor.idx].rx_pkt++;
+		}
+	}
+	return 0;
+}
+#define IIP_OPS_UDP_PAYLOAD() do { iip_ret_int = iip_ops_udp_payload(w, pb_id, udp_hdr, data_len, opaque); } while (0)
 
 #define SKIP_IIP_DEFINITION
 #include IIP_MAIN_C
