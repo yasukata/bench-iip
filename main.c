@@ -782,7 +782,7 @@ static void iip_ops_arp_ethernet_reply(IIP_PKT_P m, IIP_OPAQUE_P *opaque)
 			memcpy(ad->remote_mac, hw_sender, 6);
 	}
 }
-#define IIP_OPS_ARP_ETHERNET_REPLY() do { iip_ops_arp_ethernet_reply(rx_pkt, opaque); iip_ret_int = 0; } while (0)
+#define IIP_OPS_ARP_ETHERNET_REPLY() do { iip_ops_arp_ethernet_reply(II_PB(pb_id).part_pkt[0].p, opaque); iip_ret_int = 0; } while (0)
 
 #define IIP_OPS_TCP_ACCEPT() do { iip_ret_bool = true; } while (0)
 
@@ -990,8 +990,8 @@ static int iip_ops_udp_payload(IIP_MEM_P w, II_PB_P pb_id, uint8_t udp_hdr[II_UD
 			{
 				uint8_t buf[0xffff];
 				if (iip_udp_ipv4_ethernet_send_copy(w,
-							II_PB(pb_id).part_pkt[0].l2_dst, ii_extract_ipv4_dst_be(II_PB(pb_id).part_pkt[0].l3), ntohs(ii_read_uint16(&udp_hdr[2])),
-							II_PB(pb_id).part_pkt[0].l2_src, ii_extract_ipv4_src_be(II_PB(pb_id).part_pkt[0].l3), ntohs(ii_read_uint16(&udp_hdr[0])),
+							&II_PB(pb_id).part_pkt[0].head[0], ii_extract_ipv4_dst_be(&II_PB(pb_id).part_pkt[0].head[II_ETH_HDR_LEN]), ntohs(ii_read_uint16(&udp_hdr[2])),
+							&II_PB(pb_id).part_pkt[0].head[II_ETH_ADDR_LEN], ii_extract_ipv4_src_be(&II_PB(pb_id).part_pkt[0].head[II_ETH_HDR_LEN]), ntohs(ii_read_uint16(&udp_hdr[0])),
 							0, buf, ad->payload_len, opaque) != IIP_ERR_OK) {
 					assert(0);
 				}
