@@ -170,7 +170,7 @@ struct thread_data {
 };
 
 struct tcp_opaque {
-	uintptr_t handle;
+	void *handle;
 	uint16_t cur;
 	uint16_t sent;
 	uint64_t prev_sent; /* for pacing */
@@ -941,7 +941,7 @@ static int iip_ops_tcp_payload(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, II_PB_P pb_i
 }
 #define IIP_OPS_TCP_PAYLOAD() do { iip_ret_int = iip_ops_tcp_payload(w, conn_id, pb_id, opaque); } while (0)
 
-static int iip_ops_tcp_closed(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P opaque)
+static int iip_ops_tcp_closed(IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P opaque)
 {
 	if (II_TCP_CONN(conn_id).dst_port == 50000 /* remote shutdown */) {
 		__APP_PRINTF("remote stop request is handled\n");
@@ -972,7 +972,7 @@ static int iip_ops_tcp_closed(IIP_MEM_P w, IIP_TCP_CONN_P conn_id, IIP_OPAQUE_P 
 	}
 	return 0;
 }
-#define IIP_OPS_TCP_CLOSED() do { iip_ret_int = iip_ops_tcp_closed(w, conn_id, opaque); } while (0)
+#define IIP_OPS_TCP_CLOSED() do { iip_ret_int = iip_ops_tcp_closed(conn_id, opaque); } while (0)
 
 #define IIP_OPS_TCP_STATE_CLOSE_WAIT() do { iip_ret_int = iip_tcp_close(w, conn_id, opaque); } while (0)
 
